@@ -1,0 +1,212 @@
+// Glue: drive decodeVideo, paint the chronotope column-by-column, and run a
+// live composite preview on a viz canvas. Render goes as fast as the codec
+// allows — no real-time pacing — yielding to the event loop only when the
+// main thread has been blocked for more than a vsync, so the UI stays
+// responsive while the chronotope builds.
+
+import { decodeVideo, type VideoMeta } from "./decode";
+import { columnsForFrame, frameForColumn } from "./chronotope";
+
+export interface RenderProgress {
+  frame: number;
+  total: number;
+}
+
+export interface RenderResult {
+  meta: VideoMeta;
+  // The chronotope canvas. Held off-DOM. Pass to exportChronotopeJpeg.
+  chronotope: HTMLCanvasElement;
+}
+
+export interface RenderOptions {
+  reverse?: boolean;
+  // Show the faint vertical sweep marker on the live preview / recorded
+  // viz. Defaults to true.
+  sweep?: boolean;
+  signal?: AbortSignal;
+  onMeta?: (m: VideoMeta) => void;
+  onProgress?: (p: RenderProgress) => void;
+  // Visible canvas for the live composite preview: source frame →
+  // chronotope (so far) → sweep marker.
+  viz?: HTMLCanvasElement | null;
+  // Fires once when the (off-DOM) chronotope canvas has been allocated and
+  // sized. Lets callers snapshot mid-render — the same canvas reference is
+  // then returned in the final RenderResult.
+  onChronotopeReady?: (chronotope: HTMLCanvasElement) => void;
+  // Fires after each composite paint of the viz canvas. Callers use this
+  // to capture the canvas state for recording (WebCodecs VideoEncoder).
+  // The viz canvas reference is stable for the whole render. Awaited so
+  // the recorder can apply backpressure (encodeQueueSize) without losing
+  // frames.
+  onVizFrame?: (frameIndex: number) => void | Promise<void>;
+}
+
+// Cap the viz canvas's longest edge. The chronotope canvas always stays at
+// full source resolution for export; this only sizes the live preview /
+// recorded MP4. A 5K source would otherwise force two 85 MB drawImage
+// calls per frame, which the GPU can't sustain.
+const VIZ_MAX_DIM = 1600;
+
+// If the main thread has been blocked for more than this, yield to rAF
+// before the next frame so the compositor + React can repaint. Bigger
+// values render faster; smaller values feel more responsive.
+const YIELD_AFTER_MS = 16;
+
+export async function renderChronotope(
+  file: File,
+  opts: RenderOptions = {},
+): Promise<RenderResult> {
+  // Off-DOM chronotope target. Transparent — JPEG export flattens onto a
+  // chosen background.
+  const chronotope = document.createElement("canvas");
+  let chronoCtx: CanvasRenderingContext2D | null = null;
+
+  const viz = opts.viz ?? null;
+  let vizCtx: CanvasRenderingContext2D | null = null;
+  let vizW = 0;
+  let vizH = 0;
+
+  let meta: VideoMeta | null = null;
+  let columnsByFrame: Int32Array[] = [];
+  // Leading edge of the chronotope build. Forward fills left→right; reverse
+  // fills right→left.
+  let sweepCol = opts.reverse ? Number.POSITIVE_INFINITY : -1;
+  let lastYieldMs = performance.now();
+
+  const compositeViz = (frame: VideoFrame | null) => {
+    if (!viz || !vizCtx || !meta) return;
+    if (frame) vizCtx.drawImage(frame, 0, 0, vizW, vizH);
+    vizCtx.drawImage(chronotope, 0, 0, vizW, vizH);
+    if (
+      opts.sweep !== false &&
+      Number.isFinite(sweepCol) &&
+      sweepCol >= 0 &&
+      sweepCol < meta.width
+    ) {
+      const x = (sweepCol / meta.width) * vizW;
+      vizCtx.save();
+      vizCtx.globalAlpha = 0.22;
+      vizCtx.fillStyle = "#ffffff";
+      vizCtx.fillRect(x, 0, Math.max(2, (vizW / meta.width) * 2), vizH);
+      vizCtx.restore();
+    }
+  };
+
+  await decodeVideo(
+    file,
+    (m) => {
+      meta = m;
+      chronotope.width = m.width;
+      chronotope.height = m.height;
+      chronoCtx = chronotope.getContext("2d");
+      if (!chronoCtx) throw new Error("No 2d context on chronotope canvas");
+      chronoCtx.clearRect(0, 0, m.width, m.height);
+
+      if (viz) {
+        const scale = Math.min(1, VIZ_MAX_DIM / Math.max(m.width, m.height));
+        vizW = Math.max(2, Math.round(m.width * scale));
+        vizH = Math.max(2, Math.round(m.height * scale));
+        viz.width = vizW;
+        viz.height = vizH;
+        vizCtx = viz.getContext("2d");
+        if (!vizCtx) throw new Error("No 2d context on viz canvas");
+        vizCtx.fillStyle = "#000";
+        vizCtx.fillRect(0, 0, vizW, vizH);
+      }
+
+      const fmap = frameForColumn(m.width, m.totalFrames, opts.reverse ?? false);
+      columnsByFrame = columnsForFrame(fmap, m.totalFrames);
+
+      opts.onChronotopeReady?.(chronotope);
+      opts.onMeta?.(m);
+
+      lastYieldMs = performance.now();
+    },
+    async (frame, index) => {
+      if (!chronoCtx || !meta) return;
+
+      // 1) Yield to the event loop if we've been hogging the main thread
+      //    for more than a vsync. Keeps the UI responsive (progress bar,
+      //    React state updates, layout) without forcing real-time pacing.
+      const now = performance.now();
+      if (now - lastYieldMs >= YIELD_AFTER_MS) {
+        await new Promise<void>((r) => requestAnimationFrame(() => r()));
+        lastYieldMs = performance.now();
+      }
+      if (opts.signal?.aborted) return;
+
+      // 2) Paint columns owned by this frame onto the chronotope canvas.
+      const cols = columnsByFrame[index];
+      if (cols && cols.length > 0) {
+        if (opts.reverse) {
+          sweepCol = Math.min(sweepCol, cols[0]);
+        } else {
+          sweepCol = Math.max(sweepCol, cols[cols.length - 1]);
+        }
+        let runStart = cols[0];
+        let runEnd = cols[0];
+        for (let i = 1; i < cols.length; i++) {
+          const c = cols[i];
+          if (c === runEnd + 1) {
+            runEnd = c;
+          } else {
+            const w = runEnd - runStart + 1;
+            chronoCtx.drawImage(
+              frame,
+              runStart, 0, w, meta.height,
+              runStart, 0, w, meta.height,
+            );
+            runStart = c;
+            runEnd = c;
+          }
+        }
+        const w = runEnd - runStart + 1;
+        chronoCtx.drawImage(
+          frame,
+          runStart, 0, w, meta.height,
+          runStart, 0, w, meta.height,
+        );
+      }
+
+      // 3) Composite the live preview + signal the recorder. Awaited so
+      //    the recorder can apply queue-size backpressure.
+      compositeViz(frame);
+      const vizP = opts.onVizFrame?.(index);
+      if (vizP) await vizP;
+
+      opts.onProgress?.({ frame: index + 1, total: meta.totalFrames });
+    },
+    opts.signal,
+  );
+
+  if (!meta) throw new Error("Decoder finished without metadata");
+
+  // Final composite paint so the viz canvas (and last recorded frame)
+  // ends on the completed chronotope rather than mid-build.
+  compositeViz(null);
+
+  return { meta, chronotope };
+}
+
+// Flatten a (possibly transparent) chronotope canvas onto black and produce
+// a JPEG. Mirrors the `cv2.imwrite` output of the Python script.
+export function exportChronotopeJpeg(
+  canvas: HTMLCanvasElement,
+  quality = 0.92,
+): Promise<Blob> {
+  const tmp = document.createElement("canvas");
+  tmp.width = canvas.width;
+  tmp.height = canvas.height;
+  const ctx = tmp.getContext("2d");
+  if (!ctx) throw new Error("Could not get 2d context for export canvas");
+  ctx.fillStyle = "#000";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(canvas, 0, 0);
+  return new Promise((resolve, reject) => {
+    tmp.toBlob(
+      (b) => (b ? resolve(b) : reject(new Error("toBlob returned null"))),
+      "image/jpeg",
+      quality,
+    );
+  });
+}
