@@ -61,6 +61,13 @@ export async function renderChronotope(
   const chronotope = document.createElement("canvas");
   let chronoCtx: CanvasRenderingContext2D | null = null;
 
+  // Intermediate canvas we paint each VideoFrame onto before slicing.
+  // Drawing partial source rects directly from a VideoFrame is unreliable
+  // on iOS WebKit (the chroma-subsampling-aligned cropping produces
+  // garbled stripes); slicing from a canvas works consistently everywhere.
+  const frameCanvas = document.createElement("canvas");
+  let frameCtx: CanvasRenderingContext2D | null = null;
+
   const viz = opts.viz ?? null;
   let vizCtx: CanvasRenderingContext2D | null = null;
   let vizW = 0;
@@ -73,9 +80,9 @@ export async function renderChronotope(
   let sweepCol = opts.reverse ? Number.POSITIVE_INFINITY : -1;
   let lastYieldMs = performance.now();
 
-  const compositeViz = (frame: VideoFrame | null) => {
+  const compositeViz = (drawSource: boolean) => {
     if (!viz || !vizCtx || !meta) return;
-    if (frame) vizCtx.drawImage(frame, 0, 0, vizW, vizH);
+    if (drawSource && frameCtx) vizCtx.drawImage(frameCanvas, 0, 0, vizW, vizH);
     vizCtx.drawImage(chronotope, 0, 0, vizW, vizH);
     if (
       opts.sweep !== false &&
@@ -102,6 +109,13 @@ export async function renderChronotope(
       if (!chronoCtx) throw new Error("No 2d context on chronotope canvas");
       chronoCtx.clearRect(0, 0, m.width, m.height);
 
+      frameCanvas.width = m.width;
+      frameCanvas.height = m.height;
+      // alpha:false: source video frames are opaque; skipping the alpha
+      // channel saves per-pixel work on the per-frame full draw below.
+      frameCtx = frameCanvas.getContext("2d", { alpha: false });
+      if (!frameCtx) throw new Error("No 2d context on frame canvas");
+
       if (viz) {
         const scale = Math.min(1, VIZ_MAX_DIM / Math.max(m.width, m.height));
         vizW = Math.max(2, Math.round(m.width * scale));
@@ -123,7 +137,7 @@ export async function renderChronotope(
       lastYieldMs = performance.now();
     },
     async (frame, index) => {
-      if (!chronoCtx || !meta) return;
+      if (!chronoCtx || !frameCtx || !meta) return;
 
       // 1) Yield to the event loop if we've been hogging the main thread
       //    for more than a vsync. Keeps the UI responsive (progress bar,
@@ -135,7 +149,13 @@ export async function renderChronotope(
       }
       if (opts.signal?.aborted) return;
 
-      // 2) Paint columns owned by this frame onto the chronotope canvas.
+      // 2) Paint the full VideoFrame onto frameCanvas — this is the only
+      //    place we draw a VideoFrame as a source. All subsequent
+      //    column-slicing reads from frameCanvas, which is RGBA and has
+      //    no chroma-subsampling alignment quirks.
+      frameCtx.drawImage(frame, 0, 0);
+
+      // 3) Paint columns owned by this frame onto the chronotope canvas.
       const cols = columnsByFrame[index];
       if (cols && cols.length > 0) {
         if (opts.reverse) {
@@ -152,7 +172,7 @@ export async function renderChronotope(
           } else {
             const w = runEnd - runStart + 1;
             chronoCtx.drawImage(
-              frame,
+              frameCanvas,
               runStart, 0, w, meta.height,
               runStart, 0, w, meta.height,
             );
@@ -162,15 +182,15 @@ export async function renderChronotope(
         }
         const w = runEnd - runStart + 1;
         chronoCtx.drawImage(
-          frame,
+          frameCanvas,
           runStart, 0, w, meta.height,
           runStart, 0, w, meta.height,
         );
       }
 
-      // 3) Composite the live preview + signal the recorder. Awaited so
+      // 4) Composite the live preview + signal the recorder. Awaited so
       //    the recorder can apply queue-size backpressure.
-      compositeViz(frame);
+      compositeViz(true);
       const vizP = opts.onVizFrame?.(index);
       if (vizP) await vizP;
 
@@ -183,7 +203,7 @@ export async function renderChronotope(
 
   // Final composite paint so the viz canvas (and last recorded frame)
   // ends on the completed chronotope rather than mid-build.
-  compositeViz(null);
+  compositeViz(false);
 
   return { meta, chronotope };
 }
