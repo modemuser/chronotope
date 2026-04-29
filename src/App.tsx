@@ -181,6 +181,7 @@ export function App() {
           reverse,
           sweep: showSweep,
           viz: vizCanvasRef.current!,
+          livePace: isMobile,
           onChronotopeReady: (c) => {
             chronotopeRef.current = c;
           },
