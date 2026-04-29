@@ -343,8 +343,8 @@ export function App() {
             <span className="pos">noun</span>
           </h1>
           <p className="definition">
-            A single picture in which time becomes space — each vertical
-            slice comes from a different moment in a video. From Greek{" "}
+            A single picture in which time becomes space — each vertical slice
+            comes from a different moment in a video. From Greek{" "}
             <em>chronos</em> (time) and <em>topos</em> (place).
           </p>
           <p className="example">
@@ -354,23 +354,22 @@ export function App() {
             Drop a timelapse video to make one. Nothing leaves your browser.
           </p>
           <p>
-            Or try a sample:{" "}
+            Try a sample:{" "}
             <button
               type="button"
               className="link"
               onClick={() => loadSample("verdon.mp4")}
             >
-              Verdon
+              Blue hour
             </button>
-            ,{" "}
+            {" | "}
             <button
               type="button"
               className="link"
               onClick={() => loadSample("vosges_snow.mp4")}
             >
-              Vosges
+              Cotton candy snow
             </button>
-            .
           </p>
         </header>
 
@@ -416,10 +415,7 @@ export function App() {
         {phase === "rendering" && (
           <div className="progress">
             <div className="progress-bar">
-              <div
-                className="progress-bar-fill"
-                style={{ width: `${pct}%` }}
-              />
+              <div className="progress-bar-fill" style={{ width: `${pct}%` }} />
             </div>
             <div className="progress-text">
               Rendering… {progress.frame} / {progress.total || "?"} frames
@@ -544,6 +540,15 @@ export function App() {
             e.target.value = "";
           }}
         />
+
+        <a
+          className="footer-link"
+          href="https://github.com/modemuser/chronotope"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          github
+        </a>
       </div>
     </>
   );
