@@ -164,8 +164,20 @@ export async function renderChronotope(
       // 2) Paint the full VideoFrame onto frameCanvas — this is the only
       //    place we draw a VideoFrame as a source. All subsequent
       //    column-slicing reads from frameCanvas, which is RGBA and has
-      //    no chroma-subsampling alignment quirks.
-      frameCtx.drawImage(frame, 0, 0);
+      //    no chroma-subsampling alignment quirks. Apply the container's
+      //    display rotation here so frameCanvas (and downstream chronotope
+      //    + viz) is in display orientation.
+      if (meta.rotation === 0) {
+        frameCtx.drawImage(frame, 0, 0);
+      } else {
+        const dw = frame.displayWidth;
+        const dh = frame.displayHeight;
+        frameCtx.save();
+        frameCtx.translate(meta.width / 2, meta.height / 2);
+        frameCtx.rotate((meta.rotation * Math.PI) / 180);
+        frameCtx.drawImage(frame, -dw / 2, -dh / 2);
+        frameCtx.restore();
+      }
 
       // 3) Paint columns owned by this frame onto the chronotope canvas.
       const cols = columnsByFrame[index];

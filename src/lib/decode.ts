@@ -12,6 +12,9 @@ import type {
 } from "mp4box";
 
 export interface VideoMeta {
+  // Display dimensions — already accounts for the container's rotation
+  // matrix. iPhone portrait clips report e.g. 1080 × 1920 here even
+  // though the encoded frames are landscape 1920 × 1080.
   width: number;
   height: number;
   totalFrames: number;
@@ -20,6 +23,10 @@ export interface VideoMeta {
   // Overall file bitrate in bits/sec (file.size * 8 / duration). Includes
   // audio + container overhead, matching how ffprobe reports "bitrate".
   bitrate: number;
+  // Clockwise display rotation in degrees, snapped to {0, 90, 180, 270}.
+  // VideoDecoder produces frames in encoded orientation; consumers apply
+  // this rotation themselves when painting.
+  rotation: number;
 }
 
 // onFrame is awaited serially. The frame is closed immediately after the
@@ -30,6 +37,19 @@ export type FrameCallback = (
 ) => void | Promise<void>;
 
 const QUEUE_HIGH_WATER = 8;
+
+// Read the cardinal CW display rotation from the track header's transform
+// matrix. iPhone portrait clips ship a 90° rotation; the encoded frames
+// remain landscape and consumers (us) apply the rotation when drawing.
+function trackRotationDegrees(trak: any): number {
+  const m = trak?.tkhd?.matrix;
+  if (!m || m.length < 4) return 0;
+  // Entries (a, b) are 16.16 fixed-point in the ISO BMFF spec.
+  const a = m[0] / 65536;
+  const b = m[1] / 65536;
+  const deg = (Math.atan2(b, a) * 180) / Math.PI;
+  return (((Math.round(deg / 90) * 90) % 360) + 360) % 360;
+}
 
 function codecDescription(track: any): Uint8Array {
   for (const entry of track.mdia.minf.stbl.stsd.entries) {
@@ -58,6 +78,10 @@ export async function decodeVideo(
   // ---- 1. Parse container, get metadata + samples ----
   const collected: MP4Sample[] = [];
   let trackId = -1;
+  // Encoded (sensor-orientation) frame dimensions; needed for
+  // VideoDecoder.configure even when the track displays rotated.
+  let encodedWidth = 0;
+  let encodedHeight = 0;
 
   const ready = new Promise<VideoMeta>((resolve, reject) => {
     mp4box.onError = (e: string) => reject(new Error(`mp4box: ${e}`));
@@ -68,16 +92,24 @@ export async function decodeVideo(
         return;
       }
       trackId = vt.id;
+      encodedWidth = vt.video.width;
+      encodedHeight = vt.video.height;
+      const trak =
+        mp4box.moov.traks.find((t: any) => t.tkhd.track_id === vt.id) ??
+        mp4box.moov.traks[0];
+      const rotation = trackRotationDegrees(trak);
+      const swap = rotation === 90 || rotation === 270;
       const durationSec = info.duration / info.timescale;
       const fps = durationSec > 0 ? vt.nb_samples / durationSec : 0;
       const bitrate = durationSec > 0 ? (file.size * 8) / durationSec : 0;
       resolve({
-        width: vt.video.width,
-        height: vt.video.height,
+        width: swap ? encodedHeight : encodedWidth,
+        height: swap ? encodedWidth : encodedHeight,
         totalFrames: vt.nb_samples,
         fps,
         codec: vt.codec,
         bitrate,
+        rotation,
       });
     };
   });
@@ -101,6 +133,27 @@ export async function decodeVideo(
   const trakBox = mp4box.moov.traks.find((t: any) => t.tkhd.track_id === trackId)
     ?? mp4box.moov.traks[0];
   const description = codecDescription(trakBox);
+
+  // Probe the decoder before configuring. On iOS WebKit an unsupported
+  // codec (typically HEVC on iOS < 17.4) doesn't throw or fire onError —
+  // it just never outputs frames, leaving the UI stuck at "0 / ?". The
+  // probe surfaces the failure with a useful message.
+  const support = await VideoDecoder.isConfigSupported({
+    codec: meta.codec,
+    codedWidth: encodedWidth,
+    codedHeight: encodedHeight,
+    description,
+  });
+  if (!support.supported) {
+    const isHevc = /^hvc1|^hev1/i.test(meta.codec);
+    throw new Error(
+      isHevc
+        ? `This browser can't decode HEVC (${meta.codec}). ` +
+            `iPhone clips are HEVC by default; on iOS you need 17.4 or ` +
+            `later. Or set Camera → Formats → "Most Compatible" to record H.264.`
+        : `This browser can't decode ${meta.codec}.`,
+    );
+  }
 
   onMeta(meta);
 
@@ -158,8 +211,8 @@ export async function decodeVideo(
 
   decoder.configure({
     codec: meta.codec,
-    codedWidth: meta.width,
-    codedHeight: meta.height,
+    codedWidth: encodedWidth,
+    codedHeight: encodedHeight,
     description,
   });
 
