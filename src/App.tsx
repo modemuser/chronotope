@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { exportChronotopeJpeg, renderChronotope } from "./lib/render";
 import { Mp4Recorder, videoEncoderSupported } from "./lib/recorder";
 import type { VideoMeta } from "./lib/decode";
@@ -75,6 +75,18 @@ export function App() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const renderStateRef = useRef<RenderState | null>(null);
   const chronotopeRef = useRef<HTMLCanvasElement | null>(null);
+
+  // On phones/tablets the WebCodecs VideoEncoder is either missing or buggy
+  // (iOS WebKit produces broken H.264 chunks in practice). Skip the MP4
+  // recording path there and let the user watch the chronotope build live
+  // on the viz canvas instead. Detection: coarse pointer + no hover.
+  const isMobile = useMemo(
+    () =>
+      typeof window !== "undefined" &&
+      typeof window.matchMedia === "function" &&
+      window.matchMedia("(hover: none) and (pointer: coarse)").matches,
+    [],
+  );
 
   // onPick is referenced from event handlers attached to `document`. Stash
   // it in a ref so the listener doesn't need to re-attach on every render.
@@ -174,7 +186,8 @@ export function App() {
           },
           onMeta: (m) => {
             setMeta(m);
-            if (!videoEncoderSupported() || !vizCanvasRef.current) return;
+            if (isMobile || !videoEncoderSupported() || !vizCanvasRef.current)
+              return;
             const fps =
               m.fps && Number.isFinite(m.fps) && m.fps > 0 ? m.fps : 30;
             try {
@@ -378,12 +391,11 @@ export function App() {
               ...(meta && {
                 aspectRatio: `${meta.width} / ${meta.height}`,
               }),
-              // Hide the preview wrapper during render so the user only
-              // sees the progress bar. The canvas inside stays mounted so
-              // vizCanvasRef is stable; we now sample its pixels via
-              // createImageBitmap (an explicit copy), which works even
-              // when the canvas isn't visually rendered.
-              ...(phase === "rendering" && { display: "none" }),
+              // Hide the preview wrapper during render on desktop so the
+              // user only sees the progress bar — the MP4 plays back after.
+              // On mobile we skip MP4 encoding, so keep the canvas visible
+              // and let the user watch the chronotope build live.
+              ...(phase === "rendering" && !isMobile && { display: "none" }),
             }}
           >
             <canvas ref={vizCanvasRef} className="layer" />
