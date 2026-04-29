@@ -276,7 +276,7 @@ button.toggle[aria-pressed="false"] {
 }
 
 /* Inline text-link styled button (lives inside <p> copy). */
-button.link {
+.link {
   background: none;
   border: 0;
   padding: 0;
@@ -288,7 +288,7 @@ button.link {
   text-underline-offset: 2px;
 }
 
-button.link:hover {
+.link:hover {
   color: var(--accent-strong);
 }
 
@@ -366,4 +366,17 @@ button.link:hover {
   padding: 12px 16px;
   font-size: 13px;
   white-space: pre-wrap;
+}
+
+.footer-link {
+  margin-top: 24px;
+  font-size: 12px;
+  color: var(--fg-dim);
+  text-decoration: none;
+  align-self: flex-start;
+}
+
+.footer-link:hover {
+  color: var(--accent);
+  text-decoration: underline;
 }
