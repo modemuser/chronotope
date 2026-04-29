@@ -1,8 +1,12 @@
 # chronotope
 
-Browser-only chronotope renderer. Drop a timelapse video, get one image where
-each vertical column comes from a different frame. Decode + render + encode
-all run client-side; nothing is uploaded.
+![Chronotope of a snowy mountain dawn](public/og.jpg)
+
+Turn a video into a single image of time — each column from a different
+frame, all stitched into one picture. Decode, render, and encode all run
+client-side; nothing is uploaded.
+
+→ https://chronotope.acxx.workers.dev/
 
 ## Stack
 

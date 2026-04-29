@@ -343,9 +343,9 @@ export function App() {
             <span className="pos">noun</span>
           </h1>
           <p className="definition">
-            A single picture in which time becomes space — each vertical slice
-            comes from a different moment in a video. From Greek{" "}
-            <em>chronos</em> (time) and <em>topos</em> (place).
+            A single picture where time becomes space — each column captures
+            a different moment of a video. From Greek <em>chronos</em>{" "}
+            (time) and <em>topos</em> (place).
           </p>
           <p className="example">
             <em>e.g.</em> a 2-hour sunset packed into one still image.
