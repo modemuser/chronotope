@@ -39,6 +39,12 @@ export interface RenderOptions {
   // the recorder can apply backpressure (encodeQueueSize) without losing
   // frames.
   onVizFrame?: (frameIndex: number) => void | Promise<void>;
+  // Pace the render to the source's fps (real-time playback). Used when
+  // there's no encoder backpressure to throttle the loop — without this
+  // the viz canvas updates faster than the eye can follow and looks
+  // juddery. If the decode/paint can't keep up, frames just process as
+  // fast as they can (no catch-up sleep).
+  livePace?: boolean;
 }
 
 // Cap the viz canvas's longest edge. The chronotope canvas always stays at
@@ -79,6 +85,8 @@ export async function renderChronotope(
   // fills right→left.
   let sweepCol = opts.reverse ? Number.POSITIVE_INFINITY : -1;
   let lastYieldMs = performance.now();
+  // Wall-clock anchor for live-pace mode; set on the first frame.
+  let paceStartMs = -1;
 
   const compositeViz = (drawSource: boolean) => {
     if (!viz || !vizCtx || !meta) return;
@@ -142,10 +150,14 @@ export async function renderChronotope(
       // 1) Yield to the event loop if we've been hogging the main thread
       //    for more than a vsync. Keeps the UI responsive (progress bar,
       //    React state updates, layout) without forcing real-time pacing.
-      const now = performance.now();
-      if (now - lastYieldMs >= YIELD_AFTER_MS) {
-        await new Promise<void>((r) => requestAnimationFrame(() => r()));
-        lastYieldMs = performance.now();
+      //    Skipped in livePace mode — the per-frame wait below already
+      //    yields enough.
+      if (!opts.livePace) {
+        const now = performance.now();
+        if (now - lastYieldMs >= YIELD_AFTER_MS) {
+          await new Promise<void>((r) => requestAnimationFrame(() => r()));
+          lastYieldMs = performance.now();
+        }
       }
       if (opts.signal?.aborted) return;
 
@@ -195,6 +207,20 @@ export async function renderChronotope(
       if (vizP) await vizP;
 
       opts.onProgress?.({ frame: index + 1, total: meta.totalFrames });
+
+      // 5) In live-pace mode: yield to rAF so the just-painted frame is
+      //    actually visible, then wait until this frame's wall-clock slot
+      //    elapses. If we're already behind schedule, skip the wait.
+      if (opts.livePace && meta.fps > 0) {
+        await new Promise<void>((r) => requestAnimationFrame(() => r()));
+        if (paceStartMs < 0) paceStartMs = performance.now();
+        const targetMs = paceStartMs + ((index + 1) * 1000) / meta.fps;
+        const waitMs = targetMs - performance.now();
+        if (waitMs > 0) {
+          await new Promise<void>((r) => setTimeout(r, waitMs));
+        }
+        lastYieldMs = performance.now();
+      }
     },
     opts.signal,
   );
