@@ -188,6 +188,8 @@ export function HowItWorks({ inModal = false, onClose }: HowItWorksProps = {}) {
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.setClearColor(0x0c0c10, 1);
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
     const scene = new THREE.Scene();
     // Ortho camera so slabs at different z appear at the same width — no
@@ -201,7 +203,28 @@ export function HowItWorks({ inModal = false, onClose }: HowItWorksProps = {}) {
     camera.position.copy(camCenter).addScaledVector(camDir, 40);
     camera.lookAt(camCenter);
 
-    scene.add(new THREE.AmbientLight(0xffffff, 1));
+    // Lighting: bright ambient so the (Lambert) photo-paper side faces
+    // stay near-white, plus a directional source roughly parallel to the
+    // stack axis (low-front position) so each slab casts a soft shadow
+    // onto the white sides of the slabs behind it. Front faces of slabs
+    // use unlit MeshBasicMaterial so the video textures stay at their
+    // source brightness — only the sides receive light/shadow.
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.7);
+    scene.add(ambientLight);
+    const dirLight = new THREE.DirectionalLight(0xffffff, 0.85);
+    dirLight.position.set(camCenter.x, camCenter.y - 12, camCenter.z + 30);
+    dirLight.target.position.copy(camCenter);
+    dirLight.castShadow = true;
+    dirLight.shadow.mapSize.set(2048, 2048);
+    dirLight.shadow.bias = -0.0008;
+    dirLight.shadow.camera.near = 0.5;
+    dirLight.shadow.camera.far = 80;
+    dirLight.shadow.camera.left = -22;
+    dirLight.shadow.camera.right = 22;
+    dirLight.shadow.camera.top = 22;
+    dirLight.shadow.camera.bottom = -22;
+    scene.add(dirLight);
+    scene.add(dirLight.target);
 
     container.appendChild(renderer.domElement);
     renderer.domElement.style.width = "100%";
@@ -461,7 +484,10 @@ export function HowItWorks({ inModal = false, onClose }: HowItWorksProps = {}) {
         mat.opacity = op * (1 - fadeOut);
         mat.transparent = true;
         diagonalLine.visible = mat.opacity > 0.01;
-        const diagLen = Math.sqrt(W * W + Z_TOTAL * Z_TOTAL);
+        // Diagonal goes from (W/N, Z) to (W, 0) in (x, z), so the actual
+        // length differs slightly from the loaf's full diagonal.
+        const dW = W * ((N_FRAMES - 1) / N_FRAMES);
+        const diagLen = Math.sqrt(dW * dW + Z_TOTAL * Z_TOTAL);
         diagonalLine.scale.y = Math.max(0.0001, draw * diagLen);
       }
 
@@ -492,6 +518,13 @@ export function HowItWorks({ inModal = false, onClose }: HowItWorksProps = {}) {
         camera.zoom = newZoom;
         camera.updateProjectionMatrix();
       }
+      // Fade the directional light (and ramp ambient up) as the rotation
+      // begins, so the side faces lose their cast shadows and the
+      // chronotope reveal lands shadow-free and uniformly bright. Side
+      // faces also go edge-on at face-on view, so they naturally vanish.
+      const shadowK = 1 - smoothstep(0, 0.4, p4);
+      dirLight.intensity = 0.85 * shadowK;
+      ambientLight.intensity = 0.7 + (1 - shadowK) * 0.3;
     }
 
     // Pre-computed quaternions used by animate() each frame.
@@ -549,10 +582,17 @@ export function HowItWorks({ inModal = false, onClose }: HowItWorksProps = {}) {
     // Diagonal cut line on the top face (loaf-local y = +H/2 + epsilon).
     // Modelled as a thin cylinder along the diagonal so we get a fat,
     // clearly-visible stroke. The cylinder is shifted so its origin is at
-    // one end (front-left top corner); the draw animation scales it along
-    // its axis from 0 → diagLen.
+    // one end (start), then scaled along its axis from 0 → diagLen.
+    //
+    // Endpoints match where the cut actually falls on the first and last
+    // slabs: on slab 0 at x = -W/2 + W/N (its xCut), and on slab N-1 at
+    // x = +W/2 (its xCut = W).
     {
-      const startPoint = new THREE.Vector3(-W / 2, H / 2 + 0.05, Z_TOTAL / 2);
+      const startPoint = new THREE.Vector3(
+        -W / 2 + W / N_FRAMES,
+        H / 2 + 0.05,
+        Z_TOTAL / 2,
+      );
       const endPoint = new THREE.Vector3(W / 2, H / 2 + 0.05, -Z_TOTAL / 2);
       const dir = endPoint.clone().sub(startPoint).normalize();
       const radius = 0.11;
@@ -585,53 +625,72 @@ export function HowItWorks({ inModal = false, onClose }: HowItWorksProps = {}) {
         });
         if (disposed) return;
 
+        // Shared white photo-paper material for the side faces. Lambert
+        // so it responds to the directional light and receives shadows
+        // from adjacent slabs. BoxGeometry face/group order:
+        //   0: +x   1: -x   2: +y   3: -y   4: +z (front)   5: -z
+        const sideMat = new THREE.MeshLambertMaterial({ color: 0xf2f0eb });
+
+        // Box thickness in z. Big enough that side faces are visible in
+        // iso view, small enough that the loaf still reads as "thin
+        // slices". Each slab still sits at its slab-local z=0 — the
+        // box just gives it body.
+        const SLAB_THICK = 0.045;
+
         for (let i = 0; i < N_FRAMES; i++) {
           const tex = textures[i];
-          const xCut = (i / (N_FRAMES - 1)) * W;
+          // Each slab represents a chunk of W/N columns of the
+          // chronotope, so slab i keeps columns [0, (i+1)·W/N]. This
+          // gives slab 0 a non-zero (W/N) keep-strip — without it the
+          // first slab vanishes entirely after the cut.
+          const xCut = ((i + 1) / N_FRAMES) * W;
           const wL = Math.max(xCut, 0.0001);
           const wR = Math.max(W - xCut, 0.0001);
 
-          // Children are positioned with the slab's visual CENTER at the
-          // group origin (slab-local x=0), so the group's quaternion
-          // pivots around the slab's middle — matching how the video
-          // plane is anchored at its center.
-          //
-          // Full slab — one plane, no seam. Used during scenes 1-2.
-          const full = new THREE.Mesh(
-            new THREE.PlaneGeometry(W, H),
-            new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide }),
-          );
+          // Helper to build a Box-slab with the video texture on its +z
+          // face and dark gray everywhere else. uMin/uMax remap the +z
+          // face's u coordinate so the slab shows the right slice of the
+          // texture (full for `full`, left portion for `left`, right
+          // portion for `right`).
+          const makeSlab = (
+            boxW: number,
+            uMin: number,
+            uMax: number,
+          ): THREE.Mesh => {
+            const geom = new THREE.BoxGeometry(boxW, H, SLAB_THICK);
+            const uvs = geom.getAttribute("uv");
+            // BoxGeometry +z face vertices are uv indices 16..19.
+            for (let v = 16; v <= 19; v++) {
+              const u = uvs.getX(v);
+              uvs.setX(v, uMin + u * (uMax - uMin));
+            }
+            uvs.needsUpdate = true;
+            const frontMat = new THREE.MeshBasicMaterial({ map: tex });
+            const mesh = new THREE.Mesh(geom, [
+              sideMat, // +x
+              sideMat, // -x
+              sideMat, // +y
+              sideMat, // -y
+              frontMat, // +z (textured front, unlit)
+              sideMat, // -z
+            ]);
+            mesh.castShadow = true;
+            mesh.receiveShadow = true;
+            return mesh;
+          };
+
+          // Full slab — full texture. Used during scenes 1-2.
+          const full = makeSlab(W, 0, 1);
           full.position.set(0, 0, 0);
 
-          // Left half: world-x ∈ [0, xCut] when at rest, slab-local
-          // x ∈ [-W/2, -W/2 + wL]. Hidden until scene 3.
-          const leftGeom = new THREE.PlaneGeometry(wL, H);
-          const uvL = leftGeom.getAttribute("uv");
-          for (let v = 0; v < uvL.count; v++) {
-            uvL.setX(v, uvL.getX(v) * (xCut / W));
-          }
-          uvL.needsUpdate = true;
-          const left = new THREE.Mesh(
-            leftGeom,
-            new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide }),
-          );
+          // Left half: x ∈ [0, xCut], texture u ∈ [0, xCut/W]. Hidden
+          // until scene 3.
+          const left = makeSlab(wL, 0, xCut / W);
           left.position.set(-W / 2 + wL / 2, 0, 0);
           left.visible = false;
 
-          // Right half: world-x ∈ [xCut, W] at rest, slab-local
-          // x ∈ [-W/2 + xCut, +W/2]. Same material as `left` so no seam
-          // when coplanar at scene 3 t=0.
-          const rightGeom = new THREE.PlaneGeometry(wR, H);
-          const uvR = rightGeom.getAttribute("uv");
-          for (let v = 0; v < uvR.count; v++) {
-            const u = uvR.getX(v);
-            uvR.setX(v, xCut / W + u * (1 - xCut / W));
-          }
-          uvR.needsUpdate = true;
-          const right = new THREE.Mesh(
-            rightGeom,
-            new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide }),
-          );
+          // Right half: x ∈ [xCut, W], texture u ∈ [xCut/W, 1].
+          const right = makeSlab(wR, xCut / W, 1);
           right.position.set(-W / 2 + xCut + wR / 2, 0, 0);
           right.userData.restX = right.position.x;
           right.visible = false;
