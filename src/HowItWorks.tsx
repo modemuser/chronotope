@@ -23,7 +23,7 @@ const SAMPLES: { key: string; label: string; url: string }[] = [
   { key: "vosges_snow", label: "Cotton candy snow", url: "/vosges_snow.mp4" },
   { key: "verdon", label: "Blue hour", url: "/verdon.mp4" },
 ];
-const N_FRAMES = 16; // slabs in the demo stack
+const N_FRAMES = 24; // slabs in the demo stack
 // Bigger than the slab's on-screen footprint at peak zoom (scene 4
 // reveal) so the chronotope reads sharp, not pixely. 32 frames at
 // 960×540×4 ≈ 66 MB of canvas-backed memory — acceptable.
@@ -492,6 +492,39 @@ export function HowItWorks({ inModal = false, onClose }: HowItWorksProps = {}) {
         s.group.visible =
           t >= captureStart && s.group.userData.captured === true;
 
+        // Fly-in opacity: invisible at spawn (slab is at the video plane,
+        // both coincide in z) → fully opaque on landing. Two things have
+        // to be true for the slab to actually show as transparent over
+        // the video: (a) opacity=k via transparent material with
+        // depthWrite=false (so the half-faded slab doesn't punch holes
+        // in the depth buffer); (b) renderOrder=1 so the slab always
+        // renders AFTER the videoPlane (renderOrder=0) — without this,
+        // when the two coincide the back-to-front sort can land the
+        // videoPlane after the slab and the opaque video alpha=1 wipes
+        // the slab out (the "spawns behind the video" symptom). On
+        // landing, flip back to opaque + renderOrder=0 so the loaf
+        // renders in the normal opaque pass.
+        const fullArr = s.full.material as THREE.Material[];
+        const sideMatI = fullArr[0] as THREE.MeshLambertMaterial;
+        const frontMatI = fullArr[4] as THREE.MeshBasicMaterial;
+        // Last slab spawns exactly when the videoPlane vanishes — there's
+        // nothing behind it to fade over, so fading would just dissolve
+        // it against the dark bg. Treat it as solid from spawn.
+        const isLastSlab = i === N - 1;
+        const flying = !splitMode && !isLastSlab && k < 1 - 0.005;
+        if (sideMatI.transparent !== flying) {
+          sideMatI.transparent = flying;
+          sideMatI.depthWrite = !flying;
+          sideMatI.needsUpdate = true;
+          frontMatI.transparent = flying;
+          frontMatI.depthWrite = !flying;
+          frontMatI.needsUpdate = true;
+          s.full.renderOrder = flying ? 1 : 0;
+        }
+        const flyOpacity = flying ? k : 1;
+        sideMatI.opacity = flyOpacity;
+        frontMatI.opacity = flyOpacity;
+
         // Render mode: full single plane vs. split halves.
         s.full.visible = !splitMode;
         s.left.visible = splitMode;
@@ -758,9 +791,39 @@ export function HowItWorks({ inModal = false, onClose }: HowItWorksProps = {}) {
             return mesh;
           };
 
-          // Full slab — full texture. Used during scenes 1-2.
+          // Full slab — full texture. Used during scenes 1-2. Materials
+          // cloned per-slab and marked transparent (with depthWrite off)
+          // so the fly-in fade doesn't bleed into the shared sideMat used
+          // by left, and the partially-faded slab doesn't punch holes in
+          // the depth buffer. Switched back to opaque on landing.
           const full = makeSlab(W, 0, 1);
+          {
+            const arr = full.material as THREE.Material[];
+            const cloneSide = (
+              arr[0] as THREE.MeshLambertMaterial
+            ).clone();
+            cloneSide.transparent = true;
+            cloneSide.depthWrite = false;
+            const cloneFront = (
+              arr[4] as THREE.MeshBasicMaterial
+            ).clone();
+            cloneFront.transparent = true;
+            cloneFront.depthWrite = false;
+            full.material = [
+              cloneSide,
+              cloneSide,
+              cloneSide,
+              cloneSide,
+              cloneFront,
+              cloneSide,
+            ];
+          }
           full.position.set(0, 0, 0);
+          // Match the flying state set in animate(): renders after the
+          // videoPlane (renderOrder=0) so the half-faded slab composites
+          // over the video instead of being wiped by it. Flipped back to
+          // 0 on landing.
+          full.renderOrder = 1;
 
           // Left half: x ∈ [0, xCut], texture u ∈ [0, xCut/W]. Hidden
           // until scene 3.
