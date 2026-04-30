@@ -197,12 +197,27 @@ export async function decodeVideo(
       wakeProducer = resolve;
     });
 
+  // Watchdog for the silent-hang case: iOS WebKit's
+  // VideoDecoder.isConfigSupported sometimes reports a config as
+  // supported but the actual decoder produces zero frames (typical for
+  // H.264 High Level 5.0 on older iPhones). Without this the UI sits
+  // forever at "0 / ?".
+  let firstFrameWatchdog: ReturnType<typeof setTimeout> | null = null;
+  const cancelWatchdog = () => {
+    if (firstFrameWatchdog) {
+      clearTimeout(firstFrameWatchdog);
+      firstFrameWatchdog = null;
+    }
+  };
+
   const decoder = new VideoDecoder({
     output: (frame) => {
+      cancelWatchdog();
       queue.push({ frame, index: frameIndex++ });
       notifyConsumer();
     },
     error: (e) => {
+      cancelWatchdog();
       decodeError = e instanceof Error ? e : new Error(String(e));
       notifyConsumer();
       notifyProducer();
@@ -215,6 +230,19 @@ export async function decodeVideo(
     codedHeight: encodedHeight,
     description,
   });
+
+  firstFrameWatchdog = setTimeout(() => {
+    if (frameIndex === 0 && !decodeError && !signal?.aborted) {
+      decodeError = new Error(
+        `Decoder didn't produce any frames within 10 s. The codec ` +
+          `(${meta.codec}) is reported supported but the device's ` +
+          `decoder isn't actually outputting — common for H.264 High ` +
+          `Profile or large frame sizes on older iPhones.`,
+      );
+      notifyConsumer();
+      notifyProducer();
+    }
+  }, 10000);
 
   // --- Producer: feed encoded samples into the decoder ---
   const producer = (async () => {
@@ -276,6 +304,7 @@ export async function decodeVideo(
       }
     }
   } catch (e) {
+    cancelWatchdog();
     // Drain remaining frames so VideoFrames don't leak.
     for (const it of queue) it.frame.close();
     queue.length = 0;
@@ -287,6 +316,7 @@ export async function decodeVideo(
     throw e;
   }
 
+  cancelWatchdog();
   await producer;
   try {
     decoder.close();
