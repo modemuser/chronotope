@@ -23,7 +23,7 @@ const SAMPLES: { key: string; label: string; url: string }[] = [
   { key: "vosges_snow", label: "Cotton candy snow", url: "/vosges_snow.mp4" },
   { key: "verdon", label: "Blue hour", url: "/verdon.mp4" },
 ];
-const N_FRAMES = 24; // slabs in the demo stack
+const N_FRAMES = 16; // slabs in the demo stack
 // Bigger than the slab's on-screen footprint at peak zoom (scene 4
 // reveal) so the chronotope reads sharp, not pixely. 32 frames at
 // 960×540×4 ≈ 66 MB of canvas-backed memory — acceptable.
