@@ -1,24 +1,26 @@
-// Short, choreographed Three.js explainer for the chronotope algorithm.
+// Choreographed Three.js explainer for the chronotope: a diagonal slice
+// through a block universe of stacked frames.
 //
-// Geometry: each sampled frame becomes a vertical slab (W×H plane in xy)
-// stacked along z, parented to a `loafGroup` pivoted at the loaf center.
+// Geometry: each sampled frame becomes a flat W×H slice in the xy plane;
+// stacking them along z gives a 3D block where the third axis is time.
 // Frame 0 lands closest to the camera; each subsequent capture flies in
-// from the video position and lands further back.
+// from the video position and lands further back, parented to a
+// `loafGroup` pivoted at the block center.
 //
-// The chronotope picks column x from frame f(x) = x*(N-1)/(W-1). On the
-// loaf's top face this maps to the diagonal (x=0, z=Z_TOTAL) → (x=W, z=0).
-// In scene 3 each slab is split at that diagonal and the right halves lift
-// away. The remaining left halves form a staircase whose right edges are
-// exactly the kept columns. Scene 4 rotates the loaf so the slab normals
-// point at the camera — at that orientation, depth-testing makes the
-// front-most slab at each x show its kept column, and the staircase
+// The chronotope picks column x from frame f(x) = x·(N-1)/(W-1). On the
+// block's top face this maps to a diagonal from (x=0, z=Z_TOTAL) to
+// (x=W, z=0). In scene 3 each slice is split at that diagonal and the
+// far halves drop away. The remaining halves form a staircase whose
+// right edges are exactly the kept columns. Scene 4 rotates the block
+// so the frame normals point at the camera; depth-testing makes the
+// front-most slice at each x show its kept column, and the staircase
 // reveals itself as the chronotope at native 16:9 aspect.
 
 import { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 
 const SAMPLE_URL = "/verdon.mp4";
-const N_FRAMES = 32; // slabs in the demo stack
+const N_FRAMES = 16; // slabs in the demo stack
 // Bigger than the slab's on-screen footprint at peak zoom (scene 4
 // reveal) so the chronotope reads sharp, not pixely. 32 frames at
 // 960×540×4 ≈ 66 MB of canvas-backed memory — acceptable.
@@ -38,10 +40,10 @@ interface Scene {
 }
 
 const SCENES: Scene[] = [
-  { title: "1. As a video plays, snapshots are taken at regular intervals", body: "Each one stacks behind the last — a loose stack of frames, like a sliced loaf of bread.", duration: 12.0 },
-  { title: "2. Mark a diagonal across the top", body: "From the first column of the first frame to the last column of the last frame.", duration: 2.2 },
-  { title: "3. Cut along it, drop the cut-off half away", body: "Each slab keeps just its leftward portion. The right edges line up along the diagonal.", duration: 4.0 },
-  { title: "4. Rotate to face the slabs — the kept edges are the chronotope", body: "Each column comes from a different moment.", duration: 3.0 },
+  { title: "1. Sample frames as the video plays", body: "Stack them in time — a block universe with time as the third axis.", duration: 12.0 },
+  { title: "2. Mark a diagonal across the block", body: "From the first column of the first frame to the last column of the last.", duration: 2.2 },
+  { title: "3. Slice along it, drop the cut-off half", body: "What's left is bounded by the slanted cut.", duration: 4.0 },
+  { title: "4. The slice is the chronotope", body: "Each column comes from a different moment in time.", duration: 3.0 },
 ];
 
 const TOTAL_DURATION = SCENES.reduce((a, s) => a + s.duration, 0);
