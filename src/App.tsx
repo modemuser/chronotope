@@ -358,9 +358,16 @@ export function App() {
             <span className="pos">noun</span>
           </h1>
           <p className="definition">
-            A single picture where time becomes space — each column captures
-            a different moment of a video. From Greek <em>chronos</em>{" "}
-            (time) and <em>topos</em> (place).
+            A still picture where{" "}
+            <button
+              type="button"
+              className="link"
+              onClick={() => setHowOpen(true)}
+            >
+              time becomes space
+            </button>{" "}
+            — each column captures a different moment of a video. From Greek{" "}
+            <em>chronos</em> (time) and <em>topos</em> (place).
           </p>
           <p className="example">
             <em>e.g.</em> a 2-hour sunset packed into one still image.
@@ -369,14 +376,7 @@ export function App() {
             Drop a timelapse video to make one. Nothing leaves your browser.
           </p>
           <p>
-            <button
-              type="button"
-              className="link"
-              onClick={() => setHowOpen(true)}
-            >
-              See the idea
-            </button>
-            {" — or try a sample: "}
+            Try a sample:{" "}
             <button
               type="button"
               className="link"
@@ -577,7 +577,9 @@ export function App() {
           >
             the idea
           </a>
-          <span className="footer-sep" aria-hidden="true">|</span>
+          <span className="footer-sep" aria-hidden="true">
+            |
+          </span>
           <a
             href="https://github.com/modemuser/chronotope"
             target="_blank"
