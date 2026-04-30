@@ -23,6 +23,11 @@ export interface RenderOptions {
   // Show the faint vertical sweep marker on the live preview / recorded
   // viz. Defaults to true.
   sweep?: boolean;
+  // If set, quantise the chronotope into this many vertical stripes —
+  // each stripe shows columns from a single source frame, surfacing the
+  // discrete nature of the algorithm. Smooth (1 frame per column) when
+  // omitted or >= source width.
+  steps?: number;
   signal?: AbortSignal;
   onMeta?: (m: VideoMeta) => void;
   onProgress?: (p: RenderProgress) => void;
@@ -136,7 +141,12 @@ export async function renderChronotope(
         vizCtx.fillRect(0, 0, vizW, vizH);
       }
 
-      const fmap = frameForColumn(m.width, m.totalFrames, opts.reverse ?? false);
+      const fmap = frameForColumn(
+        m.width,
+        m.totalFrames,
+        opts.reverse ?? false,
+        opts.steps,
+      );
       columnsByFrame = columnsForFrame(fmap, m.totalFrames);
 
       opts.onChronotopeReady?.(chronotope);

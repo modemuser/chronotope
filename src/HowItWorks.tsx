@@ -19,8 +19,11 @@
 import { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 
-const SAMPLE_URL = "/verdon.mp4";
-const N_FRAMES = 16; // slabs in the demo stack
+const SAMPLES: { key: string; label: string; url: string }[] = [
+  { key: "vosges_snow", label: "Cotton candy snow", url: "/vosges_snow.mp4" },
+  { key: "verdon", label: "Blue hour", url: "/verdon.mp4" },
+];
+const N_FRAMES = 24; // slabs in the demo stack
 // Bigger than the slab's on-screen footprint at peak zoom (scene 4
 // reveal) so the chronotope reads sharp, not pixely. 32 frames at
 // 960×540×4 ≈ 66 MB of canvas-backed memory — acceptable.
@@ -77,76 +80,36 @@ function sceneIndexAtTime(t: number): number {
 }
 
 // Module-level cache of the per-frame canvases keyed by (url::n). Survives
-// component unmount, so closing & reopening the modal doesn't re-seek.
+// component unmount; on subsequent opens we reuse the same canvases so
+// their content is already populated (no blank-frame flash for a beat).
 const frameCache = new Map<string, HTMLCanvasElement[]>();
 
-function canvasesToTextures(
-  canvases: HTMLCanvasElement[],
-): THREE.CanvasTexture[] {
-  // CanvasTexture is bound to a specific GL context's upload state, so on
-  // each mount we wrap the cached canvases in fresh textures.
-  return canvases.map((c) => {
+// Allocate (or reuse) N empty per-slab canvases + matching CanvasTextures.
+// Each slab gets its own texture; the canvas is drawn into during scene 1
+// at the moment the corresponding slab is captured.
+function allocateFrameTextures(
+  url: string,
+  n: number,
+): { canvases: HTMLCanvasElement[]; textures: THREE.CanvasTexture[] } {
+  const cacheKey = `${url}::${n}::${FRAME_TEX_W}x${FRAME_TEX_H}`;
+  let canvases = frameCache.get(cacheKey);
+  if (!canvases) {
+    canvases = [];
+    for (let i = 0; i < n; i++) {
+      const c = document.createElement("canvas");
+      c.width = FRAME_TEX_W;
+      c.height = FRAME_TEX_H;
+      canvases.push(c);
+    }
+    frameCache.set(cacheKey, canvases);
+  }
+  // CanvasTexture is GL-context-bound, so we always make fresh textures.
+  const textures = canvases.map((c) => {
     const tex = new THREE.CanvasTexture(c);
     tex.colorSpace = THREE.SRGBColorSpace;
     return tex;
   });
-}
-
-// Extract N evenly-spaced frames from a video URL into per-frame canvases
-// (wrapped in CanvasTextures). `onProgress` fires after each capture with
-// fraction in [0, 1]. Returns instantly from cache on subsequent calls.
-async function extractFrames(
-  url: string,
-  n: number,
-  onProgress?: (frac: number) => void,
-): Promise<THREE.CanvasTexture[]> {
-  const cacheKey = `${url}::${n}::${FRAME_TEX_W}x${FRAME_TEX_H}`;
-  const cached = frameCache.get(cacheKey);
-  if (cached) {
-    onProgress?.(1);
-    return canvasesToTextures(cached);
-  }
-
-  const video = document.createElement("video");
-  video.src = url;
-  video.crossOrigin = "anonymous";
-  video.muted = true;
-  video.playsInline = true;
-  video.preload = "auto";
-
-  await new Promise<void>((resolve, reject) => {
-    video.addEventListener("loadedmetadata", () => resolve(), { once: true });
-    video.addEventListener("error", () => reject(new Error("video load failed")), { once: true });
-  });
-
-  const duration = video.duration;
-  if (!Number.isFinite(duration) || duration <= 0) {
-    throw new Error("video has no duration");
-  }
-
-  const canvases: HTMLCanvasElement[] = [];
-  for (let i = 0; i < n; i++) {
-    const t = (i / (n - 1)) * (duration - 0.1);
-    await new Promise<void>((resolve) => {
-      const onSeeked = () => {
-        video.removeEventListener("seeked", onSeeked);
-        resolve();
-      };
-      video.addEventListener("seeked", onSeeked);
-      video.currentTime = t;
-    });
-    const c = document.createElement("canvas");
-    c.width = FRAME_TEX_W;
-    c.height = FRAME_TEX_H;
-    const cctx = c.getContext("2d");
-    if (!cctx) throw new Error("no 2d context");
-    cctx.drawImage(video, 0, 0, FRAME_TEX_W, FRAME_TEX_H);
-    canvases.push(c);
-    onProgress?.((i + 1) / n);
-  }
-
-  frameCache.set(cacheKey, canvases);
-  return canvasesToTextures(canvases);
+  return { canvases, textures };
 }
 
 interface FrameSlab {
@@ -173,9 +136,9 @@ export function HowItWorks({ inModal = false, onClose }: HowItWorksProps = {}) {
   const [sceneIdx, setSceneIdx] = useState(0);
   const [progressPct, setProgressPct] = useState(0);
   const [playing, setPlaying] = useState(true);
-  const [loading, setLoading] = useState(true);
-  const [loadProgress, setLoadProgress] = useState(0);
+  const [sampleIdx, setSampleIdx] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const sample = SAMPLES[sampleIdx];
 
   // Imperative restart/pause toggles — invoked from buttons.
   const restartRef = useRef<() => void>(() => {});
@@ -372,11 +335,15 @@ export function HowItWorks({ inModal = false, onClose }: HowItWorksProps = {}) {
         } catch {}
       }
     };
+    const resetCaptureFlags = () => {
+      for (const s of slabs) s.group.userData.captured = false;
+    };
     restartRef.current = () => {
       timeRef.current = 0;
       playingRef.current = true;
       setPlaying(true);
       resetVideo();
+      resetCaptureFlags();
     };
     togglePlayRef.current = () => {
       const next = !playingRef.current;
@@ -385,6 +352,7 @@ export function HowItWorks({ inModal = false, onClose }: HowItWorksProps = {}) {
       if (timeRef.current >= TOTAL_DURATION && next) {
         timeRef.current = 0;
         resetVideo();
+        resetCaptureFlags();
       }
     };
 
@@ -440,9 +408,12 @@ export function HowItWorks({ inModal = false, onClose }: HowItWorksProps = {}) {
         } else {
           const captureEnd = SCENE_STARTS[0] + CAPTURE_WINDOW;
           if (t < captureEnd) {
+            // Match the playbackRate cap above: target time tops out at
+            // duration-0.1 so we never seek into the `ended` zone.
+            const lastT = Math.max(0, vidEl.duration - 0.1);
             const targetVidT = Math.max(
               0,
-              Math.min(vidEl.duration, (t / CAPTURE_WINDOW) * vidEl.duration),
+              Math.min(lastT, (t / CAPTURE_WINDOW) * lastT),
             );
             if (Math.abs(vidEl.currentTime - targetVidT) > 0.4) {
               vidEl.currentTime = targetVidT;
@@ -497,7 +468,29 @@ export function HowItWorks({ inModal = false, onClose }: HowItWorksProps = {}) {
         const k = smoothstep(0, flyDur, localT);
 
         s.group.position.copy(spawnLocal).lerp(s.restPos, k);
-        s.group.visible = t >= captureStart;
+
+        // On-the-fly frame capture: the moment a slab's captureStart is
+        // reached, paint the current source-video frame into its canvas
+        // and flag the texture for upload. Video is already synced to
+        // i/(N-1)·duration at this scene time, so this matches the old
+        // upfront-extracted frame. Visibility is gated on captured so
+        // slab 0 doesn't render black for a frame if the video isn't yet
+        // ready when t crosses 0.
+        if (
+          !s.group.userData.captured &&
+          t >= captureStart &&
+          vidEl &&
+          vidEl.readyState >= 2
+        ) {
+          const ctx = frameCanvases[i].getContext("2d");
+          if (ctx) {
+            ctx.drawImage(vidEl, 0, 0, FRAME_TEX_W, FRAME_TEX_H);
+            textures[i].needsUpdate = true;
+            s.group.userData.captured = true;
+          }
+        }
+        s.group.visible =
+          t >= captureStart && s.group.userData.captured === true;
 
         // Render mode: full single plane vs. split halves.
         s.full.visible = !splitMode;
@@ -612,7 +605,7 @@ export function HowItWorks({ inModal = false, onClose }: HowItWorksProps = {}) {
     // fires at the moment the video reaches that frame's timestamp.
     {
       const v = document.createElement("video");
-      v.src = SAMPLE_URL;
+      v.src = sample.url;
       v.crossOrigin = "anonymous";
       v.muted = true;
       v.playsInline = true;
@@ -621,7 +614,16 @@ export function HowItWorks({ inModal = false, onClose }: HowItWorksProps = {}) {
       v.addEventListener(
         "loadedmetadata",
         () => {
-          if (v.duration > 0) v.playbackRate = v.duration / CAPTURE_WINDOW;
+          // Cap playback so the video ends at duration-0.1 by the time
+          // the last slab's captureStart fires. Without this, some
+          // browsers reset the video frame after `ended`, so the last
+          // drawImage() captures frame 0 instead of the last frame.
+          if (v.duration > 0) {
+            v.playbackRate = Math.max(
+              0.1,
+              (v.duration - 0.1) / CAPTURE_WINDOW,
+            );
+          }
         },
         { once: true },
       );
@@ -698,18 +700,21 @@ export function HowItWorks({ inModal = false, onClose }: HowItWorksProps = {}) {
     raf = requestAnimationFrame(tick);
     resize();
 
-    (async () => {
-      try {
-        const textures = await extractFrames(SAMPLE_URL, N_FRAMES, (frac) => {
-          if (!disposed) setLoadProgress(frac);
-        });
-        if (disposed) return;
+    // Allocate empty per-slab canvases + textures synchronously; we draw
+    // into them on the fly during scene 1 (no upfront seek pump).
+    const { canvases: frameCanvases, textures } = allocateFrameTextures(
+      sample.url,
+      N_FRAMES,
+    );
 
-        // Shared white photo-paper material for the side faces. Lambert
-        // so it responds to the directional light and receives shadows
-        // from adjacent slabs. BoxGeometry face/group order:
-        //   0: +x   1: -x   2: +y   3: -y   4: +z (front)   5: -z
-        const sideMat = new THREE.MeshLambertMaterial({ color: SIDE_COLOR });
+    // Build slabs immediately. Their textures start empty; each is filled
+    // in animate() when the corresponding slab's captureStart is reached.
+    {
+      // Shared white photo-paper material for the side faces. Lambert
+      // so it responds to the directional light and receives shadows
+      // from adjacent slabs. BoxGeometry face/group order:
+      //   0: +x   1: -x   2: +y   3: -y   4: +z (front)   5: -z
+      const sideMat = new THREE.MeshLambertMaterial({ color: SIDE_COLOR });
 
         for (let i = 0; i < N_FRAMES; i++) {
           const tex = textures[i];
@@ -808,13 +813,29 @@ export function HowItWorks({ inModal = false, onClose }: HowItWorksProps = {}) {
           loafGroup.add(group);
           slabs.push({ group, full, left, right, restPos });
         }
+    }
 
+    // framesReadyRef goes true once the video has decoded enough that
+    // drawImage(vidEl, ...) yields a real frame — happens fast (no seek
+    // pump). Until then the timeline holds at t=0.
+    if (vidEl) {
+      const markReady = () => {
+        if (disposed) return;
         framesReadyRef.current = true;
-        setLoading(false);
-      } catch (e) {
-        if (!disposed) setError(e instanceof Error ? e.message : String(e));
+      };
+      if (vidEl.readyState >= 2) {
+        markReady();
+      } else {
+        vidEl.addEventListener("canplay", markReady, { once: true });
       }
-    })();
+      vidEl.addEventListener(
+        "error",
+        () => {
+          if (!disposed) setError("Couldn't load the sample video.");
+        },
+        { once: true },
+      );
+    }
 
     return () => {
       disposed = true;
@@ -825,7 +846,8 @@ export function HowItWorks({ inModal = false, onClose }: HowItWorksProps = {}) {
       videoTexture?.dispose();
       vidEl?.pause();
     };
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sample.url]);
 
   const cur = SCENES[sceneIdx];
 
@@ -852,14 +874,7 @@ export function HowItWorks({ inModal = false, onClose }: HowItWorksProps = {}) {
         )}
       </header>
 
-      <div className="how-stage" ref={containerRef}>
-        {loading && (
-          <div className="how-loading">
-            <ProgressRing progress={loadProgress} />
-            <div>Sampling frames… {Math.round(loadProgress * 100)}%</div>
-          </div>
-        )}
-      </div>
+      <div className="how-stage" ref={containerRef} />
 
       <div className="how-caption">
         <div className="how-step">{cur.title}</div>
@@ -873,6 +888,19 @@ export function HowItWorks({ inModal = false, onClose }: HowItWorksProps = {}) {
         <button className="secondary" onClick={() => restartRef.current()}>
           Restart
         </button>
+        <div className="how-samples">
+          {SAMPLES.map((s, i) => (
+            <button
+              key={s.key}
+              type="button"
+              className="link"
+              aria-pressed={i === sampleIdx}
+              onClick={() => setSampleIdx(i)}
+            >
+              {s.label}
+            </button>
+          ))}
+        </div>
         <div className="how-progress">
           <div className="how-progress-fill" style={{ width: `${progressPct}%` }} />
         </div>
@@ -883,32 +911,3 @@ export function HowItWorks({ inModal = false, onClose }: HowItWorksProps = {}) {
   );
 }
 
-function ProgressRing({ progress }: { progress: number }) {
-  const r = 14;
-  const c = 2 * Math.PI * r;
-  return (
-    <svg width="36" height="36" viewBox="0 0 36 36" aria-hidden="true">
-      <circle
-        cx="18"
-        cy="18"
-        r={r}
-        fill="none"
-        stroke="var(--border)"
-        strokeWidth="2"
-      />
-      <circle
-        cx="18"
-        cy="18"
-        r={r}
-        fill="none"
-        stroke="var(--accent)"
-        strokeWidth="2"
-        strokeLinecap="round"
-        strokeDasharray={c}
-        strokeDashoffset={c * (1 - progress)}
-        transform="rotate(-90 18 18)"
-        style={{ transition: "stroke-dashoffset 80ms linear" }}
-      />
-    </svg>
-  );
-}

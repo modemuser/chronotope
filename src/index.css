@@ -501,18 +501,6 @@ button.toggle[aria-pressed="false"] {
   position: relative;
 }
 
-.how-loading {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 12px;
-  color: var(--fg-dim);
-  font-size: 13px;
-  pointer-events: none;
-}
 
 
 .how-caption {
@@ -539,6 +527,20 @@ button.toggle[aria-pressed="false"] {
   display: flex;
   align-items: center;
   gap: 12px;
+}
+
+.how-samples {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  font-size: 12px;
+}
+
+.how-samples .link[aria-pressed="true"] {
+  color: var(--fg);
+  font-weight: 600;
+  text-decoration: none;
+  cursor: default;
 }
 
 .how-progress {

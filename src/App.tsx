@@ -25,6 +25,26 @@ function humanBytes(n: number): string {
   return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`;
 }
 
+// Three-step staircase rising to the right — toggle between smooth and
+// stripes (discrete) chronotope modes.
+function StairsIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      width="1em"
+      height="1em"
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.6"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <polyline points="2,14 2,10 6,10 6,6 10,6 10,2 14,2" />
+    </svg>
+  );
+}
+
 // Lucide-style download glyph. Sized via currentColor + em so it inherits
 // the parent button's color and font-size.
 function DownloadIcon() {
@@ -74,6 +94,7 @@ export function App() {
   const [dragging, setDragging] = useState(false);
   const [reverse, setReverse] = useState(false);
   const [showSweep, setShowSweep] = useState(true);
+  const [stripes, setStripes] = useState(false);
   const [howOpen, setHowOpen] = useState(false);
 
   const vizCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -195,6 +216,7 @@ export function App() {
           signal: ctl.signal,
           reverse,
           sweep: showSweep,
+          steps: stripes ? 24 : undefined,
           viz: vizCanvasRef.current!,
           livePace: isMobile,
           onChronotopeReady: (c) => {
@@ -295,10 +317,11 @@ export function App() {
       renderStateRef.current = null;
       chronotopeRef.current = null;
     };
-  }, [file, reverse, showSweep]);
+  }, [file, reverse, showSweep, stripes]);
 
   const onToggleReverse = () => setReverse((r) => !r);
   const onToggleSweep = () => setShowSweep((s) => !s);
+  const onToggleStripes = () => setStripes((s) => !s);
 
   const baseName = file ? file.name.replace(/\.[^.]+$/, "") : "chronotope";
 
@@ -470,6 +493,18 @@ export function App() {
               }
             >
               |
+            </button>
+            <button
+              className="secondary toggle"
+              onClick={onToggleStripes}
+              aria-pressed={stripes}
+              title={
+                stripes
+                  ? "Discrete: 24 stripes, one frame each — click for smooth"
+                  : "Smooth: every column its own frame — click for stripes"
+              }
+            >
+              <StairsIcon />
             </button>
             <div className="controls-right">
               {showJpegBtn && (
