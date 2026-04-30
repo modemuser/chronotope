@@ -1,7 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { exportChronotopeJpeg, renderChronotope } from "./lib/render";
 import { Mp4Recorder, videoEncoderSupported } from "./lib/recorder";
 import type { VideoMeta } from "./lib/decode";
+
+const HowItWorks = lazy(() =>
+  import("./HowItWorks").then((m) => ({ default: m.HowItWorks })),
+);
 
 type Phase = "idle" | "rendering" | "done" | "error";
 
@@ -70,6 +74,7 @@ export function App() {
   const [dragging, setDragging] = useState(false);
   const [reverse, setReverse] = useState(false);
   const [showSweep, setShowSweep] = useState(true);
+  const [howOpen, setHowOpen] = useState(false);
 
   const vizCanvasRef = useRef<HTMLCanvasElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -110,6 +115,16 @@ export function App() {
     setErrorMsg(null);
     setFile(f);
   };
+
+  // ESC closes the How-it-works modal.
+  useEffect(() => {
+    if (!howOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setHowOpen(false);
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [howOpen]);
 
   // Whole-document drag-and-drop. Counter pattern handles dragenter/leave
   // bubbling through children: net counter is 1 while a drag is over any
@@ -354,7 +369,14 @@ export function App() {
             Drop a timelapse video to make one. Nothing leaves your browser.
           </p>
           <p>
-            Try a sample:{" "}
+            <button
+              type="button"
+              className="link"
+              onClick={() => setHowOpen(true)}
+            >
+              See the idea
+            </button>
+            {" — or try a sample: "}
             <button
               type="button"
               className="link"
@@ -541,14 +563,48 @@ export function App() {
           }}
         />
 
-        <a
-          className="footer-link"
-          href="https://github.com/modemuser/chronotope"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          github
-        </a>
+        <div className="footer-links">
+          <a
+            href="/idea"
+            onClick={(e) => {
+              // Plain left-click → modal. Right-click / cmd+click /
+              // middle-click fall through to the href.
+              if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0)
+                return;
+              e.preventDefault();
+              setHowOpen(true);
+            }}
+          >
+            the idea
+          </a>
+          <span className="footer-sep" aria-hidden="true">|</span>
+          <a
+            href="https://github.com/modemuser/chronotope"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            github
+          </a>
+        </div>
+
+        {howOpen && (
+          <div
+            className="how-modal-backdrop"
+            onClick={() => setHowOpen(false)}
+            role="dialog"
+            aria-modal="true"
+            aria-label="The idea"
+          >
+            <div
+              className="how-modal-panel"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <Suspense fallback={null}>
+                <HowItWorks inModal onClose={() => setHowOpen(false)} />
+              </Suspense>
+            </div>
+          </div>
+        )}
       </div>
     </>
   );
