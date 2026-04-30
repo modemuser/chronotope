@@ -32,6 +32,11 @@ const W = 16;
 const H = 9;
 const Z_TOTAL = 12;
 const SLAB_GAP = Z_TOTAL / (N_FRAMES - 1);
+// Box thickness shared by every slab + the source video preview.
+const SLAB_THICK = 0.045;
+// Off-white photo-paper color for the side faces of every slab and
+// of the video preview Box.
+const SIDE_COLOR = 0xf2f0eb;
 
 interface Scene {
   title: string;
@@ -192,15 +197,16 @@ export function HowItWorks({ inModal = false, onClose }: HowItWorksProps = {}) {
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
     const scene = new THREE.Scene();
-    // Ortho camera so slabs at different z appear at the same width — no
-    // perspective foreshortening between front and back of the stack.
-    // We size the frustum based on container aspect in resize().
-    const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, -100, 200);
-    // Fixed iso top-right view. Direction picked so we see the top edges
-    // of all slabs (a strip along z), the right edges, and the front face.
+    // Perspective camera with a narrow FOV at long distance so the
+    // foreshortening between front and back slabs is subtle (~15%) but
+    // present — gives the stack real 3D depth without distorting the
+    // chronotope reveal. Aspect set in resize().
+    const CAM_DISTANCE = 60;
+    const CAM_FOV = 20;
+    const camera = new THREE.PerspectiveCamera(CAM_FOV, 1, 0.1, 300);
     const camCenter = new THREE.Vector3(W / 2, H / 2, Z_TOTAL / 2);
     const camDir = new THREE.Vector3(0.85, 0.7, 1).normalize();
-    camera.position.copy(camCenter).addScaledVector(camDir, 40);
+    camera.position.copy(camCenter).addScaledVector(camDir, CAM_DISTANCE);
     camera.lookAt(camCenter);
 
     // Lighting: bright ambient so the (Lambert) photo-paper side faces
@@ -279,14 +285,14 @@ export function HowItWorks({ inModal = false, onClose }: HowItWorksProps = {}) {
       const h = container.clientHeight;
       if (w === 0 || h === 0) return;
       renderer.setSize(w, h, false);
-      const halfH = 11;
       const aspect = w / h;
-      const halfW = halfH * aspect;
-      camera.left = -halfW;
-      camera.right = halfW;
-      camera.top = halfH;
-      camera.bottom = -halfH;
+      camera.aspect = aspect;
       camera.updateProjectionMatrix();
+      // World half-extents at the camCenter plane (where the loaf sits) —
+      // used for placing the video plane and computing scene-4 zoom.
+      const halfH =
+        CAM_DISTANCE * Math.tan(THREE.MathUtils.degToRad(CAM_FOV / 2));
+      const halfW = halfH * aspect;
       // Final reveal: chronotope (W × H) should fill the viewport with
       // a small margin. Pick the zoom that fits in the tighter dimension.
       const zoomY = (2 * halfH) / H;
@@ -427,11 +433,8 @@ export function HowItWorks({ inModal = false, onClose }: HowItWorksProps = {}) {
       // hard the instant the last slab starts moving (t = CAPTURE_WINDOW)
       // — no fade afterwards. Position + orientation set in resize().
       if (videoPlane) {
-        const visible = framesReadyRef.current && t < CAPTURE_WINDOW;
-        const mat = videoPlane.material as THREE.MeshBasicMaterial;
-        mat.opacity = visible ? 1 : 0;
-        mat.transparent = true;
-        videoPlane.visible = visible;
+        videoPlane.visible =
+          framesReadyRef.current && t < CAPTURE_WINDOW;
       }
 
       // ---------- Loaf placement (scenes 1 → 2 transition) ----------
@@ -480,7 +483,7 @@ export function HowItWorks({ inModal = false, onClose }: HowItWorksProps = {}) {
         const op = smoothstep(0.0, 0.3, p2);
         const fadeOut = smoothstep(0.0, 0.5, p4);
         const draw = smoothstep(0.0, 0.55, p2);
-        const mat = diagonalLine.material as THREE.MeshBasicMaterial;
+        const mat = diagonalLine.material as THREE.MeshLambertMaterial;
         mat.opacity = op * (1 - fadeOut);
         mat.transparent = true;
         diagonalLine.visible = mat.opacity > 0.01;
@@ -489,6 +492,17 @@ export function HowItWorks({ inModal = false, onClose }: HowItWorksProps = {}) {
         const dW = W * ((N_FRAMES - 1) / N_FRAMES);
         const diagLen = Math.sqrt(dW * dW + Z_TOTAL * Z_TOTAL);
         diagonalLine.scale.y = Math.max(0.0001, draw * diagLen);
+        // Drop with the cut-off halves during scene 3 (matches the same
+        // dropY / slideX as `s.right.position`).
+        const k3 = smoothstep(0.0, 0.7, p3);
+        const dropY = k3 * (H * 2.0);
+        const slideX = k3 * (W * 0.4);
+        const rest = diagonalLine.userData.restPos as THREE.Vector3;
+        diagonalLine.position.set(
+          rest.x + slideX,
+          rest.y - dropY,
+          rest.z,
+        );
       }
 
       // ---------- Cut + drop (scene 3) ----------
@@ -518,10 +532,15 @@ export function HowItWorks({ inModal = false, onClose }: HowItWorksProps = {}) {
         camera.zoom = newZoom;
         camera.updateProjectionMatrix();
       }
+      // Collapse the loaf along its z axis so the slabs lose their
+      // depth offsets and thickness — at the reveal they're essentially
+      // coplanar and the chronotope chunks join seamlessly with no
+      // perspective scale differences between adjacent slabs.
+      loafGroup.scale.z = 1 - 0.985 * p4;
+
       // Fade the directional light (and ramp ambient up) as the rotation
       // begins, so the side faces lose their cast shadows and the
-      // chronotope reveal lands shadow-free and uniformly bright. Side
-      // faces also go edge-on at face-on view, so they naturally vanish.
+      // chronotope reveal lands shadow-free and uniformly bright.
       const shadowK = 1 - smoothstep(0, 0.4, p4);
       dirLight.intensity = 0.85 * shadowK;
       ambientLight.intensity = 0.7 + (1 - shadowK) * 0.3;
@@ -567,15 +586,27 @@ export function HowItWorks({ inModal = false, onClose }: HowItWorksProps = {}) {
 
       videoTexture = new THREE.VideoTexture(v);
       videoTexture.colorSpace = THREE.SRGBColorSpace;
-      const mat = new THREE.MeshBasicMaterial({
+      // Same thin Box treatment as the slabs: video texture on the +z
+      // front face (Basic, unlit), photopaper-white Lambert on the sides.
+      // Iso-oriented (identity rotation) so it's parallel to the slabs.
+      const frontMat = new THREE.MeshBasicMaterial({
         map: videoTexture,
         transparent: true,
       });
-      // Plane sized to the small preview footprint, oriented to face the
-      // camera (parallel to viewport). Positioned in resize() so it sits
-      // in the lower-left of the frustum regardless of container aspect.
-      // Iso-oriented (identity rotation) so it's parallel to the slabs.
-      videoPlane = new THREE.Mesh(new THREE.PlaneGeometry(W_VID, H_VID), mat);
+      const sideMatVid = new THREE.MeshLambertMaterial({ color: SIDE_COLOR });
+      videoPlane = new THREE.Mesh(
+        new THREE.BoxGeometry(W_VID, H_VID, SLAB_THICK),
+        [
+          sideMatVid, // +x
+          sideMatVid, // -x
+          sideMatVid, // +y
+          sideMatVid, // -y
+          frontMat, // +z (video, unlit)
+          sideMatVid, // -z
+        ],
+      );
+      videoPlane.castShadow = true;
+      videoPlane.receiveShadow = true;
       scene.add(videoPlane);
     }
 
@@ -595,22 +626,28 @@ export function HowItWorks({ inModal = false, onClose }: HowItWorksProps = {}) {
       );
       const endPoint = new THREE.Vector3(W / 2, H / 2 + 0.05, -Z_TOTAL / 2);
       const dir = endPoint.clone().sub(startPoint).normalize();
-      const radius = 0.11;
-      const geom = new THREE.CylinderGeometry(radius, radius, 1, 14, 1, false);
+      const radius = 0.15;
+      const geom = new THREE.CylinderGeometry(radius, radius, 1, 18, 1, false);
       // Default cylinder is centered on origin along +y. Shift so its
       // base sits at the origin and it grows along +y.
       geom.translate(0, 0.5, 0);
-      const mat = new THREE.MeshBasicMaterial({
+      // Lambert (not Basic) so the cylinder responds to the directional
+      // light — its sides shade across the curve, giving a 3D look
+      // instead of reading as a flat 2D stroke.
+      const mat = new THREE.MeshLambertMaterial({
         color: 0xff3355,
         transparent: true,
         opacity: 0,
       });
       diagonalLine = new THREE.Mesh(geom, mat);
       diagonalLine.position.copy(startPoint);
+      diagonalLine.userData.restPos = startPoint.clone();
       diagonalLine.quaternion.setFromUnitVectors(
         new THREE.Vector3(0, 1, 0),
         dir,
       );
+      diagonalLine.castShadow = true;
+      diagonalLine.receiveShadow = true;
       diagonalLine.visible = false;
       loafGroup.add(diagonalLine);
     }
@@ -629,13 +666,7 @@ export function HowItWorks({ inModal = false, onClose }: HowItWorksProps = {}) {
         // so it responds to the directional light and receives shadows
         // from adjacent slabs. BoxGeometry face/group order:
         //   0: +x   1: -x   2: +y   3: -y   4: +z (front)   5: -z
-        const sideMat = new THREE.MeshLambertMaterial({ color: 0xf2f0eb });
-
-        // Box thickness in z. Big enough that side faces are visible in
-        // iso view, small enough that the loaf still reads as "thin
-        // slices". Each slab still sits at its slab-local z=0 — the
-        // box just gives it body.
-        const SLAB_THICK = 0.045;
+        const sideMat = new THREE.MeshLambertMaterial({ color: SIDE_COLOR });
 
         for (let i = 0; i < N_FRAMES; i++) {
           const tex = textures[i];
