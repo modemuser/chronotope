@@ -264,9 +264,12 @@ export function HowItWorks({ inModal = false, onClose }: HowItWorksProps = {}) {
     loafGroup.position.copy(camCenter);
     scene.add(loafGroup);
 
-    // Updated each resize so the scene 4 zoom-to-fit knows the right
-    // target zoom for the current container aspect.
+    // Updated each resize. revealZoom = camera.zoom that fills the
+    // viewport with the chronotope at scene 4. baseZoom = camera.zoom
+    // for scenes 1-3, picked so the lower-left loaf + top-right video
+    // (or top + bottom in portrait) both fit.
     let revealZoom = 1;
+    let baseZoom = 1;
     // Source video preview is the same size and orientation as a slab
     // (iso, in xy plane). Slabs spawn from it without any rotation —
     // they just translate from top-right to the loaf in lower-left.
@@ -313,19 +316,46 @@ export function HowItWorks({ inModal = false, onClose }: HowItWorksProps = {}) {
         slabHalfY + Math.abs((Z_TOTAL / 2) * camUp.z);
 
       const margin = 1.0;
-      // Video center in screen — top-right corner.
+      // Pick layout based on aspect: side-by-side on landscape, stacked
+      // top/bottom on portrait/square (where horizontal space is tight).
+      const isPortrait = aspect < 1.2;
+
+      // Required content half-extents for the chosen layout.
+      const requiredHalfW = isPortrait
+        ? Math.max(loafHalfX, slabHalfX) + margin
+        : loafHalfX + slabHalfX + 2 * margin;
+      const requiredHalfH = isPortrait
+        ? loafHalfY + slabHalfY + 2 * margin
+        : Math.max(loafHalfY, slabHalfY) + margin;
+
+      // Base zoom for scenes 1-3: pulled back enough that the chosen
+      // layout's content fits the viewport. For a wide landscape this
+      // stays at 1.0; for narrow portraits it shrinks below 1.
+      baseZoom = Math.min(
+        halfW / requiredHalfW,
+        halfH / requiredHalfH,
+        1.0,
+      );
+
+      // Effective viewport half-extents AFTER applying baseZoom — these
+      // are what we use to place objects at the visible edges. Without
+      // this, content stays bunched near center on portrait.
+      const effHalfW = halfW / baseZoom;
+      const effHalfH = halfH / baseZoom;
+
+      // Video position (top-right on landscape, top-center on portrait).
       if (videoPlane) {
-        const screenX = halfW - margin - slabHalfX;
-        const screenY = halfH - margin - slabHalfY;
+        const screenX = isPortrait ? 0 : effHalfW - margin - slabHalfX;
+        const screenY = effHalfH - margin - slabHalfY;
         videoPlane.position
           .copy(camCenter)
           .addScaledVector(camRight, screenX)
           .addScaledVector(camUp, screenY);
       }
-      // Loaf center for scene 1: as far into the lower-left as possible
-      // without clipping. Loaf at center for scenes 2-4.
-      const loafSx = -halfW + margin + loafHalfX;
-      const loafSy = -halfH + margin + loafHalfY;
+      // Loaf rest pos for scene 1 (bottom-left landscape, bottom-center
+      // portrait). Loaf moves to camCenter for scenes 2-4.
+      const loafSx = isPortrait ? 0 : -effHalfW + margin + loafHalfX;
+      const loafSy = -effHalfH + margin + loafHalfY;
       loafLowerLeftPos
         .copy(camCenter)
         .addScaledVector(camRight, loafSx)
@@ -481,10 +511,13 @@ export function HowItWorks({ inModal = false, onClose }: HowItWorksProps = {}) {
       if (diagonalLine) {
         const p2 = sceneProgress(t, 1);
         const op = smoothstep(0.0, 0.3, p2);
-        const fadeOut = smoothstep(0.0, 0.5, p4);
+        // Two fade phases: dissolves alongside the dropping cut-off
+        // halves in scene 3, then any residue fades over scene 4.
+        const fadeOut3 = smoothstep(0.2, 0.9, p3);
+        const fadeOut4 = smoothstep(0.0, 0.5, p4);
         const draw = smoothstep(0.0, 0.55, p2);
         const mat = diagonalLine.material as THREE.MeshLambertMaterial;
-        mat.opacity = op * (1 - fadeOut);
+        mat.opacity = op * (1 - fadeOut3) * (1 - fadeOut4);
         mat.transparent = true;
         diagonalLine.visible = mat.opacity > 0.01;
         // Diagonal goes from (W/N, Z) to (W, 0) in (x, z), so the actual
@@ -506,18 +539,25 @@ export function HowItWorks({ inModal = false, onClose }: HowItWorksProps = {}) {
       }
 
       // ---------- Cut + drop (scene 3) ----------
-      // Right halves drop down and slide outward (toward +x, the side they
-      // came from) — like cut-off slices falling off the cutting board.
-      // No opacity fade — both halves keep identical opaque materials so
-      // there's no seam at t=0 when they're still coplanar.
+      // Right halves drop down and slide outward (toward +x). They also
+      // dissolve (opacity fade) over the second half of the drop so on
+      // tall viewports — where the drop distance can't reach the bottom
+      // edge — they still vanish before the rotation reveal.
       if (splitMode) {
         const k = smoothstep(0.0, 0.7, p3);
         const dropY = k * (H * 2.0);
         const slideX = k * (W * 0.4);
+        const dropOpacity = 1 - smoothstep(0.2, 0.9, p3);
         for (const s of slabs) {
           s.right.position.y = -dropY;
           s.right.position.x = s.right.userData.restX + slideX;
-          s.right.visible = k < 1.0;
+          s.right.visible = dropOpacity > 0.01;
+          const arr = s.right.material as THREE.Material[];
+          // Materials at index 0 (side, shared in 0/1/2/3/5) and 4 (front)
+          // are cloned per slab — safe to set opacity here without
+          // affecting full/left slab materials.
+          (arr[0] as THREE.MeshLambertMaterial).opacity = dropOpacity;
+          (arr[4] as THREE.MeshBasicMaterial).opacity = dropOpacity;
         }
       }
 
@@ -527,7 +567,10 @@ export function HowItWorks({ inModal = false, onClose }: HowItWorksProps = {}) {
       // as an upright 16:9 rectangle. Concurrently zoom the ortho camera
       // so the chronotope fills the viewport.
       loafGroup.quaternion.copy(identityQuat).slerp(revealQuat, p4);
-      const newZoom = 1 + (revealZoom - 1) * p4;
+      // baseZoom (set in resize) fits the loaf+video layout for the
+      // current aspect; lerp to revealZoom over scene 4 to fill the
+      // viewport with the chronotope.
+      const newZoom = baseZoom + (revealZoom - baseZoom) * p4;
       if (Math.abs(camera.zoom - newZoom) > 1e-4) {
         camera.zoom = newZoom;
         camera.updateProjectionMatrix();
@@ -721,7 +764,28 @@ export function HowItWorks({ inModal = false, onClose }: HowItWorksProps = {}) {
           left.visible = false;
 
           // Right half: x ∈ [xCut, W], texture u ∈ [xCut/W, 1].
+          // Clone the materials so the per-slab fade in scene 3 doesn't
+          // bleed into the shared sideMat used by full + left.
           const right = makeSlab(wR, xCut / W, 1);
+          {
+            const arr = right.material as THREE.Material[];
+            const cloneSide = (
+              arr[0] as THREE.MeshLambertMaterial
+            ).clone();
+            cloneSide.transparent = true;
+            const cloneFront = (
+              arr[4] as THREE.MeshBasicMaterial
+            ).clone();
+            cloneFront.transparent = true;
+            right.material = [
+              cloneSide,
+              cloneSide,
+              cloneSide,
+              cloneSide,
+              cloneFront,
+              cloneSide,
+            ];
+          }
           right.position.set(-W / 2 + xCut + wR / 2, 0, 0);
           right.userData.restX = right.position.x;
           right.visible = false;
