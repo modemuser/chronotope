@@ -151,9 +151,69 @@ export function HowItWorks({ inModal = false, onClose }: HowItWorksProps = {}) {
     const container = containerRef.current;
     if (!container) return;
 
+    // Reset playback state on sample change so the new sample starts
+    // from t=0 in a clean "loading until video buffers" state. Refs and
+    // React state both persist across re-runs of this effect; without
+    // this, switching samples mid-animation (or after it finished)
+    // inherits the old time and playing flag.
+    timeRef.current = 0;
+    playingRef.current = true;
+    framesReadyRef.current = false;
+    setPlaying(true);
+    setSceneIdx(0);
+    setProgressPct(0);
+
     let disposed = false;
     let raf = 0;
     let lastWallMs = performance.now();
+
+    // ?record=1 turns the page into a one-shot recorder: a MediaRecorder
+    // attached to the canvas's captureStream collects ~21s of real-time
+    // animation, then auto-downloads the mp4. Off in normal use.
+    const recordMode =
+      typeof window !== "undefined" &&
+      new URLSearchParams(window.location.search).get("record") === "1";
+    let mediaRecorder: MediaRecorder | null = null;
+    const recordChunks: Blob[] = [];
+    const startRecording = (canvas: HTMLCanvasElement) => {
+      if (!recordMode || mediaRecorder) return;
+      // Chrome supports H.264-in-MP4 via MediaRecorder since 119; fall
+      // through silently on browsers that don't.
+      const mimeType = "video/mp4;codecs=avc1.42E01F";
+      if (
+        typeof MediaRecorder === "undefined" ||
+        !MediaRecorder.isTypeSupported(mimeType)
+      ) {
+        // eslint-disable-next-line no-console
+        console.warn(`MediaRecorder doesn't support ${mimeType}`);
+        return;
+      }
+      const stream = canvas.captureStream(60);
+      mediaRecorder = new MediaRecorder(stream, {
+        mimeType,
+        videoBitsPerSecond: 8_000_000,
+      });
+      mediaRecorder.ondataavailable = (e) => {
+        if (e.data.size > 0) recordChunks.push(e.data);
+      };
+      mediaRecorder.onstop = () => {
+        const blob = new Blob(recordChunks, { type: "video/mp4" });
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = "chronotope-idea.mp4";
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+      };
+      mediaRecorder.start();
+    };
+    const stopRecording = () => {
+      if (mediaRecorder && mediaRecorder.state === "recording") {
+        mediaRecorder.stop();
+      }
+      mediaRecorder = null;
+    };
 
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -249,10 +309,18 @@ export function HowItWorks({ inModal = false, onClose }: HowItWorksProps = {}) {
     // to fly across the screen from the top-right video.
     const loafCenterPos = camCenter.clone();
     const loafLowerLeftPos = camCenter.clone();
+    const rendererSize = new THREE.Vector2();
     const resize = () => {
       const w = container.clientWidth;
       const h = container.clientHeight;
       if (w === 0 || h === 0) return;
+      // Idempotent: bail if the renderer is already at this size. Lets
+      // us call resize() on every tick as a safety net (some mobile
+      // browsers fail to fire ResizeObserver on the initial layout
+      // settle, leaving the canvas stuck at the default 300×150) without
+      // re-doing setSize/projection work.
+      renderer.getSize(rendererSize);
+      if (rendererSize.x === w && rendererSize.y === h) return;
       renderer.setSize(w, h, false);
       const aspect = w / h;
       camera.aspect = aspect;
@@ -364,6 +432,25 @@ export function HowItWorks({ inModal = false, onClose }: HowItWorksProps = {}) {
       const dt = (now - lastWallMs) / 1000;
       lastWallMs = now;
 
+      // Safety-net resize: idempotent, only does work if the container
+      // changed size since last call. Catches the case where iOS Safari
+      // fails to deliver the initial ResizeObserver entry.
+      resize();
+
+      // iOS Safari sometimes never fires `canplay` (readyState 3) for
+      // muted preload videos until a user gesture, but `loadeddata`
+      // (readyState 2) does fire and is enough for drawImage. Poll here
+      // so the timeline unblocks regardless of which event fired (or
+      // didn't). markReady itself is idempotent.
+      if (
+        !framesReadyRef.current &&
+        vidEl &&
+        vidEl.readyState >= 2
+      ) {
+        framesReadyRef.current = true;
+        startRecording(renderer.domElement);
+      }
+
       // Hold the timeline at the very start until async frame extraction
       // finishes, so slabs don't pop into existence mid-capture. (The first
       // capture lands at t≈0 with the new combined scene 1.)
@@ -376,6 +463,7 @@ export function HowItWorks({ inModal = false, onClose }: HowItWorksProps = {}) {
           if (timeRef.current >= TOTAL_DURATION) {
             playingRef.current = false;
             setPlaying(false);
+            stopRecording();
           }
         }
       }
@@ -888,10 +976,15 @@ export function HowItWorks({ inModal = false, onClose }: HowItWorksProps = {}) {
       const markReady = () => {
         if (disposed) return;
         framesReadyRef.current = true;
+        startRecording(renderer.domElement);
       };
       if (vidEl.readyState >= 2) {
         markReady();
       } else {
+        // loadeddata fires at readyState=2, canplay at 3. iOS Safari
+        // can stall before reaching 3 without a user gesture, so listen
+        // for both — markReady is idempotent.
+        vidEl.addEventListener("loadeddata", markReady, { once: true });
         vidEl.addEventListener("canplay", markReady, { once: true });
       }
       vidEl.addEventListener(
@@ -907,6 +1000,7 @@ export function HowItWorks({ inModal = false, onClose }: HowItWorksProps = {}) {
       disposed = true;
       cancelAnimationFrame(raf);
       ro.disconnect();
+      stopRecording();
       renderer.dispose();
       renderer.domElement.remove();
       videoTexture?.dispose();
