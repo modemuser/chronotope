@@ -502,20 +502,25 @@ button.toggle[aria-pressed="false"] {
 }
 
 /* Phones: cap the stage to half the small viewport so the caption +
-   controls keep clear of iOS Chrome's collapsing bottom bar (the bar
-   shrinks the visible area = svh, so sizing against it gives us the
-   space that's actually visible). */
+   controls keep clear of iOS Chrome's collapsing bottom bar (svh =
+   space actually visible with the bar showing). vh fallbacks first so
+   browsers that don't parse svh still get a sensible height — without
+   them, an unsupported svh leaves height unset on a `flex: 0 1 auto`
+   element and the canvas collapses to 0. */
 @media (max-width: 640px) {
   .how-modal-backdrop {
     padding: 12px;
   }
   .how-modal-panel {
+    height: min(800px, calc(100vh - 24px));
     height: min(800px, calc(100svh - 24px));
   }
   .how-stage {
     flex: 0 1 auto;
     min-height: 0;
+    height: 50vh;
     height: 50svh;
+    max-height: 50vh;
     max-height: 50svh;
   }
 }
