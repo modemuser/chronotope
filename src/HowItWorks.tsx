@@ -47,11 +47,14 @@ interface Scene {
   duration: number;
 }
 
+// Scene 1 (mark diagonal) and 2 (drop off-cut) share a caption — the
+// animation splits them into distinct phases for clarity, but for the
+// reader they're one conceptual step: cut the block diagonally.
 const SCENES: Scene[] = [
-  { title: "1. Sample frames as the video plays", body: "Stack them in time — a block universe with time as the third axis.", duration: 12.0 },
-  { title: "2. Mark a diagonal across the block", body: "From the first column of the first frame to the last column of the last.", duration: 2.2 },
-  { title: "3. Slice along it, drop the cut-off half", body: "What's left is bounded by the slanted cut.", duration: 4.0 },
-  { title: "4. The slice is the chronotope", body: "Each column comes from a different moment in time.", duration: 3.0 },
+  { title: "1. Stack frames in time", body: "Time becomes the third axis.", duration: 12.0 },
+  { title: "2. Slice diagonally", body: "Corner to corner across the block.", duration: 2.2 },
+  { title: "2. Slice diagonally", body: "Corner to corner across the block.", duration: 4.0 },
+  { title: "3. The slice is the chronotope", body: "Each column is a different moment.", duration: 3.0 },
 ];
 
 const TOTAL_DURATION = SCENES.reduce((a, s) => a + s.duration, 0);
@@ -157,7 +160,7 @@ export function HowItWorks({ inModal = false, onClose }: HowItWorksProps = {}) {
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.setClearColor(0x0c0c10, 1);
     renderer.shadowMap.enabled = true;
-    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.shadowMap.type = THREE.PCFShadowMap;
 
     const scene = new THREE.Scene();
     // Perspective camera with a narrow FOV at long distance so the
