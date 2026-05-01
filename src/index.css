@@ -501,6 +501,25 @@ button.toggle[aria-pressed="false"] {
   position: relative;
 }
 
+/* Phones: cap the stage to half the small viewport so the caption +
+   controls keep clear of iOS Chrome's collapsing bottom bar (the bar
+   shrinks the visible area = svh, so sizing against it gives us the
+   space that's actually visible). */
+@media (max-width: 640px) {
+  .how-modal-backdrop {
+    padding: 12px;
+  }
+  .how-modal-panel {
+    height: min(800px, calc(100svh - 24px));
+  }
+  .how-stage {
+    flex: 0 1 auto;
+    min-height: 0;
+    height: 50svh;
+    max-height: 50svh;
+  }
+}
+
 
 
 .how-caption {
