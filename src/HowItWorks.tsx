@@ -994,6 +994,27 @@ export function HowItWorks({ inModal = false, onClose }: HowItWorksProps = {}) {
         },
         { once: true },
       );
+
+      // iOS Safari blocks the video from actually loading until the
+      // page receives a user gesture — even with muted+playsInline+
+      // preload="auto", the network request just doesn't go out.
+      // canplay/loadeddata never fire, framesReady stays false, and
+      // the timeline holds at t=0. Wire one-shot touchstart/click
+      // listeners on the document so the first interaction (anywhere)
+      // triggers load() + play() in the gesture's call stack, which
+      // is what iOS actually requires.
+      const kickIosLoad = () => {
+        if (!vidEl || disposed) return;
+        if (vidEl.readyState < 2) {
+          try { vidEl.load(); } catch {}
+        }
+        vidEl.play().catch(() => {});
+      };
+      document.addEventListener("touchstart", kickIosLoad, {
+        once: true,
+        passive: true,
+      });
+      document.addEventListener("click", kickIosLoad, { once: true });
     }
 
     return () => {
