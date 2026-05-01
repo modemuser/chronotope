@@ -501,6 +501,25 @@ button.toggle[aria-pressed="false"] {
   position: relative;
 }
 
+/* Tap-to-play overlay shown when iOS Safari has blocked the video from
+   loading. Pointer-events: none so taps fall through to the document
+   listener that kicks vidEl.load() in the gesture's call stack. */
+.how-tap-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  background: rgba(0, 0, 0, 0.35);
+  color: rgba(255, 255, 255, 0.9);
+  z-index: 10;
+}
+
+.how-tap-overlay svg {
+  filter: drop-shadow(0 2px 10px rgba(0, 0, 0, 0.5));
+}
+
 /* Phones: cap the stage to half the small viewport so the caption +
    controls keep clear of iOS Chrome's collapsing bottom bar (svh =
    space actually visible with the bar showing). vh fallbacks first so

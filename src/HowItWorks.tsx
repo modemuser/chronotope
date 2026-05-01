@@ -141,6 +141,11 @@ export function HowItWorks({ inModal = false, onClose }: HowItWorksProps = {}) {
   const [playing, setPlaying] = useState(true);
   const [sampleIdx, setSampleIdx] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  // Becomes true if the video doesn't reach readyState 2 within ~600ms,
+  // i.e., almost always on iOS Safari (loading is blocked until a user
+  // gesture). Drives the tap-to-play overlay; cleared the moment the
+  // video actually starts buffering.
+  const [needsTap, setNeedsTap] = useState(false);
   const sample = SAMPLES[sampleIdx];
 
   // Imperative restart/pause toggles — invoked from buttons.
@@ -162,10 +167,12 @@ export function HowItWorks({ inModal = false, onClose }: HowItWorksProps = {}) {
     setPlaying(true);
     setSceneIdx(0);
     setProgressPct(0);
+    setNeedsTap(false);
 
     let disposed = false;
     let raf = 0;
     let lastWallMs = performance.now();
+    let tapHintTimer = 0;
 
     // ?record=1 turns the page into a one-shot recorder: a MediaRecorder
     // attached to the canvas's captureStream collects ~21s of real-time
@@ -448,6 +455,7 @@ export function HowItWorks({ inModal = false, onClose }: HowItWorksProps = {}) {
         vidEl.readyState >= 2
       ) {
         framesReadyRef.current = true;
+        setNeedsTap(false);
         startRecording(renderer.domElement);
       }
 
@@ -976,6 +984,7 @@ export function HowItWorks({ inModal = false, onClose }: HowItWorksProps = {}) {
       const markReady = () => {
         if (disposed) return;
         framesReadyRef.current = true;
+        setNeedsTap(false);
         startRecording(renderer.domElement);
       };
       if (vidEl.readyState >= 2) {
@@ -1015,11 +1024,23 @@ export function HowItWorks({ inModal = false, onClose }: HowItWorksProps = {}) {
         passive: true,
       });
       document.addEventListener("click", kickIosLoad, { once: true });
+
+      // If the video hasn't started buffering within ~600ms, surface the
+      // tap-to-play overlay. On desktop / unrestricted browsers the
+      // video reaches readyState=2 well before this fires and the
+      // overlay never appears. The overlay disappears the moment
+      // markReady runs (or the readyState poll in tick catches up).
+      tapHintTimer = window.setTimeout(() => {
+        if (!disposed && !framesReadyRef.current) {
+          setNeedsTap(true);
+        }
+      }, 600);
     }
 
     return () => {
       disposed = true;
       cancelAnimationFrame(raf);
+      if (tapHintTimer) clearTimeout(tapHintTimer);
       ro.disconnect();
       stopRecording();
       renderer.dispose();
@@ -1055,7 +1076,15 @@ export function HowItWorks({ inModal = false, onClose }: HowItWorksProps = {}) {
         )}
       </header>
 
-      <div className="how-stage" ref={containerRef} />
+      <div className="how-stage" ref={containerRef}>
+        {needsTap && (
+          <div className="how-tap-overlay" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="64" height="64" fill="currentColor">
+              <path d="M8 5v14l11-7z" />
+            </svg>
+          </div>
+        )}
+      </div>
 
       <div className="how-caption">
         <div className="how-step">{cur.title}</div>
