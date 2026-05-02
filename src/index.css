@@ -221,21 +221,35 @@ header .definition em {
   margin: 0;
   padding: 0;
   display: grid;
-  grid-template-columns: max-content 1fr;
-  column-gap: 16px;
+  grid-template-columns: max-content max-content 1fr;
+  column-gap: 18px;
   row-gap: 8px;
+  align-items: baseline;
 }
 
-/* display: contents lets each <li>'s children participate directly in the
-   parent grid, so option-name and description align across rows. */
+/* display: contents lets each <li>'s three children participate directly
+   in the parent grid so glyph / name / description align across rows. */
 .info-list li {
   display: contents;
 }
 
-.info-key {
+/* Visually break adjacent groups so the list mirrors how the option
+   buttons cluster (Reverse | shape | Sweep | Stripes). The extra
+   margin-top on every cell of the row keeps row alignment intact —
+   margin on the <li> itself is a no-op under display: contents. */
+.info-list li.group-start > * {
+  margin-top: 10px;
+}
+
+.info-glyph {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  justify-content: center;
+  min-width: 1em;
+  color: var(--fg);
+}
+
+.info-name {
   color: var(--fg);
   font-weight: 600;
   white-space: nowrap;
@@ -448,6 +462,21 @@ button.info-button[aria-pressed="true"] {
 
 .preview canvas.overlay {
   z-index: 1;
+}
+
+/* Sampled-pixel colour timeline. The backing canvas is nFrames × 1 px;
+   pixelated rendering keeps adjacent frames as crisp bands rather than
+   smearing them when stretched to full width. Repaints live as the user
+   hovers over the preview. */
+.color-bar {
+  display: block;
+  width: 100%;
+  height: 24px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #000;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
 }
 
 .error {
