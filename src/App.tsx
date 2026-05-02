@@ -82,6 +82,27 @@ function ParabolaShapeIcon() {
   );
 }
 
+// Lucide-style info circle — opens the options/details explainer.
+function InfoIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      width="1em"
+      height="1em"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <circle cx="12" cy="12" r="10" />
+      <line x1="12" y1="16" x2="12" y2="11" />
+      <line x1="12" y1="8" x2="12.01" y2="8" />
+    </svg>
+  );
+}
+
 // Three-step staircase rising to the right — toggle between smooth and
 // stripes (discrete) chronotope modes.
 function StairsIcon() {
@@ -153,6 +174,7 @@ export function App() {
   const [shape, setShape] = useState<Shape>("linear");
   const [showSweep, setShowSweep] = useState(true);
   const [stripes, setStripes] = useState(false);
+  const [infoOpen, setInfoOpen] = useState(false);
   const [howOpen, setHowOpen] = useState(false);
 
   const vizCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -611,6 +633,19 @@ export function App() {
             >
               <StairsIcon />
             </button>
+            <button
+              className="info-button"
+              onClick={() => setInfoOpen((o) => !o)}
+              aria-pressed={infoOpen}
+              aria-label="Info"
+              title={
+                infoOpen
+                  ? "Hide options & video details"
+                  : "Show options & video details"
+              }
+            >
+              <InfoIcon />
+            </button>
             <div className="controls-right">
               {showJpegBtn && (
                 <button onClick={onDownloadJpeg}>
@@ -634,44 +669,102 @@ export function App() {
           </div>
         )}
 
-        {meta && (
-          <div className="meta">
-            <div className="meta-item">
-              <span className="label">Resolution</span>
-              <span className="value">
-                {meta.width} × {meta.height}
-              </span>
-            </div>
-            <div className="meta-item">
-              <span className="label">Frames</span>
-              <span className="value">{meta.totalFrames}</span>
-            </div>
-            <div className="meta-item">
-              <span className="label">FPS</span>
-              <span className="value">
-                {meta.fps > 0 ? meta.fps.toFixed(2) : "—"}
-              </span>
-            </div>
-            <div className="meta-item">
-              <span className="label">Bitrate</span>
-              <span className="value">
-                {meta.bitrate > 0
-                  ? `${(meta.bitrate / 1_000_000).toFixed(1)} Mbps`
-                  : "—"}
-              </span>
-            </div>
-            <div className="meta-item">
-              <span className="label">Codec</span>
-              <span
-                className="value"
-                style={{
-                  fontFamily: "ui-monospace, monospace",
-                  fontSize: 13,
-                }}
-              >
-                {meta.codec}
-              </span>
-            </div>
+        {infoOpen && file && (
+          <div className="info-panel">
+            <ul className="info-list">
+              <li>
+                <span className="info-key">→ Reverse</span>
+                <span>
+                  Flip the time axis. With V it gives an arrowhead; with
+                  parabola it inverts the default halo into an outward
+                  burst.
+                </span>
+              </li>
+              <li>
+                <span className="info-key">
+                  <LinearShapeIcon /> Linear
+                </span>
+                <span>
+                  Diagonal sweep — every column gets one frame, edge to
+                  edge.
+                </span>
+              </li>
+              <li>
+                <span className="info-key">
+                  <VShapeIcon /> V
+                </span>
+                <span>
+                  Time folds around the centre. Pair with reverse for an
+                  arrowhead converging inward.
+                </span>
+              </li>
+              <li>
+                <span className="info-key">
+                  <ParabolaShapeIcon /> Parabola
+                </span>
+                <span>
+                  Softer fold that holds the centre frame across most of
+                  the width — radial halo around timelapse motion by
+                  default.
+                </span>
+              </li>
+              <li>
+                <span className="info-key">| Sweep marker</span>
+                <span>
+                  Faint vertical line showing where the build has reached.
+                  Two markers for V/parabola — one per arm.
+                </span>
+              </li>
+              <li>
+                <span className="info-key">
+                  <StairsIcon /> Stripes
+                </span>
+                <span>
+                  Quantise into 24 vertical stripes — each shows a single
+                  source frame.
+                </span>
+              </li>
+            </ul>
+            {meta && (
+              <div className="info-meta">
+                <div className="meta-item">
+                  <span className="label">Resolution</span>
+                  <span className="value">
+                    {meta.width} × {meta.height}
+                  </span>
+                </div>
+                <div className="meta-item">
+                  <span className="label">Frames</span>
+                  <span className="value">{meta.totalFrames}</span>
+                </div>
+                <div className="meta-item">
+                  <span className="label">FPS</span>
+                  <span className="value">
+                    {meta.fps > 0 ? meta.fps.toFixed(2) : "—"}
+                  </span>
+                </div>
+                <div className="meta-item">
+                  <span className="label">Bitrate</span>
+                  <span className="value">
+                    {meta.bitrate > 0
+                      ? `${(meta.bitrate / 1_000_000).toFixed(1)} Mbps`
+                      : "—"}
+                  </span>
+                </div>
+                <div className="meta-item">
+                  <span className="label">Codec</span>
+                  <span
+                    className="value"
+                    style={{
+                      fontFamily: "ui-monospace, monospace",
+                      fontSize: 13,
+                    }}
+                  >
+                    {meta.codec}
+                  </span>
+                </div>
+              </div>
+            )}
           </div>
         )}
 
