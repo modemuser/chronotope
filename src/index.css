@@ -186,14 +186,64 @@ header .definition em {
   font-size: 13px;
 }
 
-.meta {
+.meta,
+.info-meta {
   display: flex;
   flex-wrap: wrap;
   gap: 16px 32px;
+}
+
+.meta {
   padding: 16px 20px;
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 10px;
+}
+
+/* Toggleable explainer for the controls + the source video metadata.
+   Hidden by default; appears below the controls bar when the (i) button
+   is pressed. */
+.info-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px 20px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--fg-dim);
+}
+
+.info-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  column-gap: 16px;
+  row-gap: 8px;
+}
+
+/* display: contents lets each <li>'s children participate directly in the
+   parent grid, so option-name and description align across rows. */
+.info-list li {
+  display: contents;
+}
+
+.info-key {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--fg);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.info-meta {
+  border-top: 1px solid var(--border);
+  padding-top: 14px;
 }
 
 .meta-item {
@@ -273,6 +323,27 @@ button.toggle[aria-pressed="false"] {
   background: transparent;
   color: var(--fg-dim);
   box-shadow: inset 0 0 0 1px var(--border);
+}
+
+/* Bare icon-only button — no background or border so it reads as
+   secondary chrome rather than a primary control. Used for the (i)
+   explainer toggle so it doesn't compete with the option buttons. */
+button.info-button {
+  background: transparent;
+  color: var(--fg-dim);
+  padding: 6px;
+  font-size: 18px;
+  border-radius: 999px;
+  box-shadow: none;
+}
+
+button.info-button:hover:not(:disabled) {
+  background: transparent;
+  color: var(--fg);
+}
+
+button.info-button[aria-pressed="true"] {
+  color: var(--accent);
 }
 
 /* Segmented group for the shape selector — three toggles butted together
