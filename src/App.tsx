@@ -86,6 +86,23 @@ function ParabolaShapeIcon() {
   );
 }
 
+// Three filled bands suggesting the colour bar's per-frame stripes.
+function ColorBarIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      width="1em"
+      height="1em"
+      viewBox="0 0 16 16"
+      fill="currentColor"
+    >
+      <rect x="2" y="5" width="3" height="6" rx="0.5" />
+      <rect x="6.5" y="5" width="3" height="6" rx="0.5" />
+      <rect x="11" y="5" width="3" height="6" rx="0.5" />
+    </svg>
+  );
+}
+
 // Lucide-style info circle — opens the options/details explainer.
 function InfoIcon() {
   return (
@@ -798,6 +815,17 @@ export function App() {
                 <span>
                   Quantise into 24 vertical stripes — each shows a single
                   source frame.
+                </span>
+              </li>
+              <li className="group-start">
+                <span className="info-glyph">
+                  <ColorBarIcon />
+                </span>
+                <span className="info-name">Colour bar</span>
+                <span>
+                  The strip below the result. Each vertical band is one
+                  frame's colour at the sampled pixel — hover anywhere on
+                  the video to move the sample point.
                 </span>
               </li>
             </ul>
