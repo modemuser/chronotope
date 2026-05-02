@@ -1,6 +1,10 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactElement } from "react";
-import { exportChronotopeJpeg, renderChronotope } from "./lib/render";
+import {
+  exportChronotopeJpeg,
+  renderChronotope,
+  type ThumbnailStrip,
+} from "./lib/render";
 import { Mp4Recorder, videoEncoderSupported } from "./lib/recorder";
 import type { VideoMeta } from "./lib/decode";
 import type { Shape } from "./lib/chronotope";
@@ -178,7 +182,43 @@ export function App() {
   const [howOpen, setHowOpen] = useState(false);
 
   const vizCanvasRef = useRef<HTMLCanvasElement>(null);
+  const colorBarRef = useRef<HTMLCanvasElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  // Thumbnail strip captured by the most recent render. Used to repaint
+  // the colour bar from a different sample point on hover, without
+  // re-decoding the source video.
+  const thumbnailsRef = useRef<ThumbnailStrip | null>(null);
+
+  // Repaint the colour bar from a sample point at fractional (x, y) in
+  // the source frame. Reads thumbnail RGB bytes directly — no canvas
+  // readback per call — and pushes a single putImageData of length
+  // nFrames × 1 to the bar canvas.
+  const paintColorBar = (xFrac: number, yFrac: number) => {
+    const tn = thumbnailsRef.current;
+    const bar = colorBarRef.current;
+    if (!tn || !bar) return;
+    const tx = Math.max(
+      0,
+      Math.min(tn.thumbW - 1, Math.floor(xFrac * tn.thumbW)),
+    );
+    const ty = Math.max(
+      0,
+      Math.min(tn.thumbH - 1, Math.floor(yFrac * tn.thumbH)),
+    );
+    const buf = new Uint8ClampedArray(tn.nFrames * 4);
+    for (let i = 0; i < tn.nFrames; i++) {
+      const c = i % tn.cols;
+      const r = Math.floor(i / tn.cols);
+      const off = ((r * tn.thumbH + ty) * tn.stripW + (c * tn.thumbW + tx)) * 4;
+      buf[i * 4] = tn.data[off];
+      buf[i * 4 + 1] = tn.data[off + 1];
+      buf[i * 4 + 2] = tn.data[off + 2];
+      buf[i * 4 + 3] = 255;
+    }
+    const ctx = bar.getContext("2d");
+    if (!ctx) return;
+    ctx.putImageData(new ImageData(buf, tn.nFrames, 1), 0, 0);
+  };
   const renderStateRef = useRef<RenderState | null>(null);
   const chronotopeRef = useRef<HTMLCanvasElement | null>(null);
 
@@ -292,7 +332,7 @@ export function App() {
 
     (async () => {
       try {
-        await renderChronotope(file, {
+        const result = await renderChronotope(file, {
           signal: ctl.signal,
           reverse,
           shape,
@@ -341,6 +381,17 @@ export function App() {
           onProgress: (p) => setProgress(p),
         });
         if (cleanedUp) return;
+
+        // Stash the per-frame thumbnail strip and prime the colour bar
+        // canvas. Sizing happens here (not in JSX) so the canvas backing
+        // buffer matches frame count exactly.
+        thumbnailsRef.current = result.thumbnails;
+        const bar = colorBarRef.current;
+        if (bar) {
+          bar.width = result.thumbnails.nFrames;
+          bar.height = 1;
+          paintColorBar(0.5, 0.5);
+        }
 
         if (recBox.rec) {
           const blob = await recBox.rec.finalize();
@@ -418,9 +469,9 @@ export function App() {
     },
     {
       value: "v",
-      label: "V",
+      label: "Bi-linear",
       title:
-        "V shape — time folds around the centre. Try with reverse for an arrowhead.",
+        "Bi-linear — two linear arms folded at the centre, motion converges into an arrowhead. Reverse for an outward expansion.",
       icon: VShapeIcon,
     },
     {
@@ -539,31 +590,51 @@ export function App() {
             <span>or click here to choose · MP4 / MOV (H.264 or HEVC)</span>
           </button>
         ) : (
-          <div
-            className="preview"
-            style={{
-              ...(meta && {
-                aspectRatio: `${meta.width} / ${meta.height}`,
-              }),
-              // Hide the preview wrapper during render on desktop so the
-              // user only sees the progress bar — the MP4 plays back after.
-              // On mobile we skip MP4 encoding, so keep the canvas visible
-              // and let the user watch the chronotope build live.
-              ...(phase === "rendering" && !isMobile && { display: "none" }),
-            }}
-          >
-            <canvas ref={vizCanvasRef} className="layer" />
-            {phase === "done" && videoUrl && (
-              // eslint-disable-next-line jsx-a11y/media-has-caption
-              <video
-                className="layer"
-                src={videoUrl}
-                controls
-                autoPlay
-                playsInline
-              />
-            )}
-          </div>
+          <>
+            <div
+              className="preview"
+              onMouseMove={(e) => {
+                // Live-resample the colour bar from whatever pixel is
+                // under the cursor. Hover (not click) so the video's
+                // play/pause toggle isn't affected.
+                if (!thumbnailsRef.current) return;
+                const r = e.currentTarget.getBoundingClientRect();
+                if (r.width <= 0 || r.height <= 0) return;
+                paintColorBar(
+                  (e.clientX - r.left) / r.width,
+                  (e.clientY - r.top) / r.height,
+                );
+              }}
+              style={{
+                ...(meta && {
+                  aspectRatio: `${meta.width} / ${meta.height}`,
+                }),
+                // Hide the preview wrapper during render on desktop so the
+                // user only sees the progress bar — the MP4 plays back after.
+                // On mobile we skip MP4 encoding, so keep the canvas visible
+                // and let the user watch the chronotope build live.
+                ...(phase === "rendering" && !isMobile && { display: "none" }),
+              }}
+            >
+              <canvas ref={vizCanvasRef} className="layer" />
+              {phase === "done" && videoUrl && (
+                // eslint-disable-next-line jsx-a11y/media-has-caption
+                <video
+                  className="layer"
+                  src={videoUrl}
+                  controls
+                  autoPlay
+                  playsInline
+                />
+              )}
+            </div>
+            <canvas
+              ref={colorBarRef}
+              className="color-bar"
+              aria-label="Colour of the sampled pixel over time"
+              style={phase === "done" ? undefined : { display: "none" }}
+            />
+          </>
         )}
 
         {phase === "rendering" && (
@@ -673,52 +744,57 @@ export function App() {
           <div className="info-panel">
             <ul className="info-list">
               <li>
-                <span className="info-key">→ Reverse</span>
+                <span className="info-glyph">→</span>
+                <span className="info-name">Reverse</span>
                 <span>
-                  Flip the time axis. With V it gives an arrowhead; with
-                  parabola it inverts the default halo into an outward
-                  burst.
+                  Flip the time axis. For bi-linear and parabola this
+                  inverts the default inward fold into an outward burst.
                 </span>
               </li>
-              <li>
-                <span className="info-key">
-                  <LinearShapeIcon /> Linear
+              <li className="group-start">
+                <span className="info-glyph">
+                  <LinearShapeIcon />
                 </span>
+                <span className="info-name">Linear</span>
                 <span>
                   Diagonal sweep — every column gets one frame, edge to
                   edge.
                 </span>
               </li>
               <li>
-                <span className="info-key">
-                  <VShapeIcon /> V
+                <span className="info-glyph">
+                  <VShapeIcon />
                 </span>
+                <span className="info-name">Bi-linear</span>
                 <span>
-                  Time folds around the centre. Pair with reverse for an
-                  arrowhead converging inward.
+                  Time folds around the centre — motion converges into an
+                  arrowhead. Reverse swaps to an outward expansion.
                 </span>
               </li>
               <li>
-                <span className="info-key">
-                  <ParabolaShapeIcon /> Parabola
+                <span className="info-glyph">
+                  <ParabolaShapeIcon />
                 </span>
+                <span className="info-name">Parabola</span>
                 <span>
                   Softer fold that holds the centre frame across most of
                   the width — radial halo around timelapse motion by
                   default.
                 </span>
               </li>
-              <li>
-                <span className="info-key">| Sweep marker</span>
+              <li className="group-start">
+                <span className="info-glyph">|</span>
+                <span className="info-name">Sweep marker</span>
                 <span>
                   Faint vertical line showing where the build has reached.
-                  Two markers for V/parabola — one per arm.
+                  Two markers for bi-linear/parabola — one per arm.
                 </span>
               </li>
-              <li>
-                <span className="info-key">
-                  <StairsIcon /> Stripes
+              <li className="group-start">
+                <span className="info-glyph">
+                  <StairsIcon />
                 </span>
+                <span className="info-name">Stripes</span>
                 <span>
                   Quantise into 24 vertical stripes — each shows a single
                   source frame.

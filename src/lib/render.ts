@@ -12,10 +12,26 @@ export interface RenderProgress {
   total: number;
 }
 
+// Downsampled-thumbnail strip captured during render, so the caller can
+// resample any (x, y) on the source over time without re-decoding. Each
+// frame's thumbnail is one cell in a 2D grid (cols × rows), aspect ratio
+// preserved, longest edge capped at THUMB_LONGEST_EDGE. data is a flat
+// RGBA buffer of the whole strip.
+export interface ThumbnailStrip {
+  thumbW: number;
+  thumbH: number;
+  cols: number;
+  rows: number;
+  stripW: number;
+  nFrames: number;
+  data: Uint8ClampedArray;
+}
+
 export interface RenderResult {
   meta: VideoMeta;
   // The chronotope canvas. Held off-DOM. Pass to exportChronotopeJpeg.
   chronotope: HTMLCanvasElement;
+  thumbnails: ThumbnailStrip;
 }
 
 export interface RenderOptions {
@@ -64,6 +80,11 @@ export interface RenderOptions {
 // calls per frame, which the GPU can't sustain.
 const VIZ_MAX_DIM = 1600;
 
+// Longest edge of each thumbnail in the per-frame strip (aspect ratio
+// preserved). 128 is a balance between memory (12 MB for 240 frames at
+// 16:9) and spatial precision when the user picks a sample point.
+const THUMB_LONGEST_EDGE = 128;
+
 // If the main thread has been blocked for more than this, yield to rAF
 // before the next frame so the compositor + React can repaint. Bigger
 // values render faster; smaller values feel more responsive.
@@ -90,13 +111,27 @@ export async function renderChronotope(
   let vizW = 0;
   let vizH = 0;
 
-  // Parabola's natural "default" (no reverse) is the radial vortex / halo
-  // — apex held late, edges snapping back to early frames. That's actually
-  // the visually striking direction, so swap the meaning of `reverse` for
-  // parabola only: UI-reverse=false → underlying reverse=true and vice
-  // versa. Linear and V keep their original semantics.
+  // Off-DOM strip that accumulates one thumbnail per frame in a 2D grid.
+  // willReadFrequently asks the browser to back the canvas with CPU pixel
+  // data so the single getImageData at the end is a copy rather than a
+  // GPU readback. Per-frame drawImage is small + pipelines on the GPU
+  // (or stays CPU-side under that hint) so the render hot path stays
+  // unblocked.
+  const thumbStrip = document.createElement("canvas");
+  let thumbCtx: CanvasRenderingContext2D | null = null;
+  let thumbW = 0;
+  let thumbH = 0;
+  let thumbCols = 0;
+
+  // Both V and parabola read better with their "into the centre" variant
+  // as the default: V → arrowhead, parabola → radial halo. So for any
+  // non-linear shape, swap the meaning of `reverse` — UI-reverse=false
+  // maps to underlying reverse=true and vice versa. Linear keeps its
+  // original semantics.
   const reverse =
-    opts.shape === "parabola" ? !(opts.reverse ?? false) : opts.reverse ?? false;
+    opts.shape && opts.shape !== "linear"
+      ? !(opts.reverse ?? false)
+      : opts.reverse ?? false;
 
   let meta: VideoMeta | null = null;
   let columnsByFrame: Int32Array[] = [];
@@ -168,6 +203,20 @@ export async function renderChronotope(
         pivot: opts.pivot,
       });
       columnsByFrame = columnsForFrame(fmap, m.totalFrames);
+
+      // Lay out thumbnails in a near-square grid so the strip canvas
+      // stays within sane dimensions even for long videos (5k frames at
+      // 16:9 = ~9k × 5k px instead of one absurdly tall stripe).
+      const longest = Math.max(m.width, m.height);
+      const thumbScale = Math.min(1, THUMB_LONGEST_EDGE / longest);
+      thumbW = Math.max(1, Math.round(m.width * thumbScale));
+      thumbH = Math.max(1, Math.round(m.height * thumbScale));
+      thumbCols = Math.ceil(Math.sqrt(m.totalFrames));
+      const thumbRows = Math.ceil(m.totalFrames / thumbCols);
+      thumbStrip.width = thumbCols * thumbW;
+      thumbStrip.height = thumbRows * thumbH;
+      thumbCtx = thumbStrip.getContext("2d", { willReadFrequently: true });
+      if (!thumbCtx) throw new Error("No 2d context on thumb strip");
       pivotCol = Math.round((opts.pivot ?? 0.5) * (m.width - 1));
 
       opts.onChronotopeReady?.(chronotope);
@@ -208,6 +257,19 @@ export async function renderChronotope(
         frameCtx.rotate((meta.rotation * Math.PI) / 180);
         frameCtx.drawImage(frame, -dw / 2, -dh / 2);
         frameCtx.restore();
+      }
+
+      // 2b) Drop a downsampled thumbnail of this frame into its slot in
+      //     the strip. drawImage scales on the GPU and pipelines with
+      //     the chronotope draws below — no per-frame readback.
+      if (thumbCtx) {
+        const c = index % thumbCols;
+        const r = Math.floor(index / thumbCols);
+        thumbCtx.drawImage(
+          frameCanvas,
+          0, 0, meta.width, meta.height,
+          c * thumbW, r * thumbH, thumbW, thumbH,
+        );
       }
 
       // 3) Paint columns owned by this frame onto the chronotope canvas.
@@ -295,7 +357,24 @@ export async function renderChronotope(
   );
 
   if (!meta) throw new Error("Decoder finished without metadata");
+  if (!thumbCtx) throw new Error("Thumb strip never initialised");
   const finalMeta: VideoMeta = meta;
+  const finalThumbCtx: CanvasRenderingContext2D = thumbCtx;
+
+  // Single batched readback of the whole thumbnail strip — one sync vs.
+  // one per frame.
+  const stripImg = finalThumbCtx.getImageData(
+    0, 0, thumbStrip.width, thumbStrip.height,
+  );
+  const thumbnails: ThumbnailStrip = {
+    thumbW,
+    thumbH,
+    cols: thumbCols,
+    rows: Math.ceil(finalMeta.totalFrames / thumbCols),
+    stripW: thumbStrip.width,
+    nFrames: finalMeta.totalFrames,
+    data: stripImg.data,
+  };
 
   // Final composite paint so the viz canvas (and last recorded frame)
   // ends on the completed chronotope rather than mid-build. Clear the
@@ -311,7 +390,7 @@ export async function renderChronotope(
     if (tailP) await tailP;
   }
 
-  return { meta: finalMeta, chronotope };
+  return { meta: finalMeta, chronotope, thumbnails };
 }
 
 // Flatten a (possibly transparent) chronotope canvas onto black and produce
