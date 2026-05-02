@@ -1,7 +1,9 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import type { ReactElement } from "react";
 import { exportChronotopeJpeg, renderChronotope } from "./lib/render";
 import { Mp4Recorder, videoEncoderSupported } from "./lib/recorder";
 import type { VideoMeta } from "./lib/decode";
+import type { Shape } from "./lib/chronotope";
 
 const HowItWorks = lazy(() =>
   import("./HowItWorks").then((m) => ({ default: m.HowItWorks })),
@@ -23,6 +25,61 @@ function humanBytes(n: number): string {
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
   if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
   return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
+
+// Curve glyphs for the three shape modes — each draws f(x) over the button.
+function LinearShapeIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      width="1em"
+      height="1em"
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.6"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <line x1="2" y1="13" x2="14" y2="3" />
+    </svg>
+  );
+}
+
+function VShapeIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      width="1em"
+      height="1em"
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.6"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <polyline points="2,3 8,13 14,3" />
+    </svg>
+  );
+}
+
+function ParabolaShapeIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      width="1em"
+      height="1em"
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.6"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M2 3 Q 8 23 14 3" />
+    </svg>
+  );
 }
 
 // Three-step staircase rising to the right — toggle between smooth and
@@ -93,6 +150,7 @@ export function App() {
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
   const [reverse, setReverse] = useState(false);
+  const [shape, setShape] = useState<Shape>("linear");
   const [showSweep, setShowSweep] = useState(true);
   const [stripes, setStripes] = useState(false);
   const [howOpen, setHowOpen] = useState(false);
@@ -215,6 +273,7 @@ export function App() {
         await renderChronotope(file, {
           signal: ctl.signal,
           reverse,
+          shape,
           sweep: showSweep,
           steps: stripes ? 24 : undefined,
           viz: vizCanvasRef.current!,
@@ -317,11 +376,39 @@ export function App() {
       renderStateRef.current = null;
       chronotopeRef.current = null;
     };
-  }, [file, reverse, showSweep, stripes]);
+  }, [file, reverse, shape, showSweep, stripes]);
 
   const onToggleReverse = () => setReverse((r) => !r);
   const onToggleSweep = () => setShowSweep((s) => !s);
   const onToggleStripes = () => setStripes((s) => !s);
+
+  const SHAPE_OPTIONS: ReadonlyArray<{
+    value: Shape;
+    label: string;
+    title: string;
+    icon: () => ReactElement;
+  }> = [
+    {
+      value: "linear",
+      label: "Linear",
+      title: "Linear sweep — edge to edge",
+      icon: LinearShapeIcon,
+    },
+    {
+      value: "v",
+      label: "V",
+      title:
+        "V shape — time folds around the centre. Try with reverse for an arrowhead.",
+      icon: VShapeIcon,
+    },
+    {
+      value: "parabola",
+      label: "Parabola",
+      title:
+        "Parabola — softer curve, holds the apex frame. Try with reverse for a halo.",
+      icon: ParabolaShapeIcon,
+    },
+  ];
 
   const baseName = file ? file.name.replace(/\.[^.]+$/, "") : "chronotope";
 
@@ -469,7 +556,7 @@ export function App() {
           </div>
         )}
 
-        {file && phase !== "rendering" && (
+        {file && (
           <div className="controls">
             <button
               className="secondary"
@@ -482,6 +569,24 @@ export function App() {
             >
               {reverse ? "←" : "→"}
             </button>
+            <div className="shape-group" role="group" aria-label="Shape">
+              {SHAPE_OPTIONS.map((opt) => {
+                const Icon = opt.icon;
+                const active = shape === opt.value;
+                return (
+                  <button
+                    key={opt.value}
+                    className="secondary toggle"
+                    onClick={() => setShape(opt.value)}
+                    aria-pressed={active}
+                    aria-label={opt.label}
+                    title={opt.title}
+                  >
+                    <Icon />
+                  </button>
+                );
+              })}
+            </div>
             <button
               className="secondary toggle"
               onClick={onToggleSweep}
@@ -519,22 +624,6 @@ export function App() {
                   <span>Animation</span>
                 </button>
               )}
-              <button
-                className="secondary"
-                onClick={() => fileInputRef.current?.click()}
-              >
-                Open…
-              </button>
-            </div>
-          </div>
-        )}
-
-        {phase === "rendering" && file && (
-          // Even during render the user should be able to abort and pick
-          // another file. Just one button — no playback or scrub controls
-          // that would interfere with the in-flight encoding.
-          <div className="controls">
-            <div className="controls-right">
               <button
                 className="secondary"
                 onClick={() => fileInputRef.current?.click()}

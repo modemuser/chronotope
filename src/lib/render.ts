@@ -5,7 +5,7 @@
 // responsive while the chronotope builds.
 
 import { decodeVideo, type VideoMeta } from "./decode";
-import { columnsForFrame, frameForColumn } from "./chronotope";
+import { columnsForFrame, frameForColumn, type Shape } from "./chronotope";
 
 export interface RenderProgress {
   frame: number;
@@ -20,6 +20,12 @@ export interface RenderResult {
 
 export interface RenderOptions {
   reverse?: boolean;
+  // Curve of the column→frame mapping. "linear" is the default diagonal
+  // sweep; "v" / "parabola" fold time symmetrically around `pivot` for
+  // radial / halo effects (esp. in combination with `reverse`).
+  shape?: Shape;
+  // Apex column as a fraction of width, 0..1 (only used by v / parabola).
+  pivot?: number;
   // Show the faint vertical sweep marker on the live preview / recorded
   // viz. Defaults to true.
   sweep?: boolean;
@@ -84,11 +90,25 @@ export async function renderChronotope(
   let vizW = 0;
   let vizH = 0;
 
+  // Parabola's natural "default" (no reverse) is the radial vortex / halo
+  // — apex held late, edges snapping back to early frames. That's actually
+  // the visually striking direction, so swap the meaning of `reverse` for
+  // parabola only: UI-reverse=false → underlying reverse=true and vice
+  // versa. Linear and V keep their original semantics.
+  const reverse =
+    opts.shape === "parabola" ? !(opts.reverse ?? false) : opts.reverse ?? false;
+
   let meta: VideoMeta | null = null;
   let columnsByFrame: Int32Array[] = [];
-  // Leading edge of the chronotope build. Forward fills left→right; reverse
-  // fills right→left.
-  let sweepCol = opts.reverse ? Number.POSITIVE_INFINITY : -1;
+  let pivotCol = 0;
+  // Leading edges of the chronotope build. Linear uses sweepCol only and
+  // grows monotonically across the width. V/parabola use both: each frame
+  // paints columns on both sides of the pivot, and we track the boundary
+  // between painted and unpainted on each side so the markers show two
+  // diverging (forward) or converging (reverse) wave fronts.
+  // sweepCol2 = -1 means "no second marker active".
+  let sweepCol = reverse ? Number.POSITIVE_INFINITY : -1;
+  let sweepCol2 = -1;
   let lastYieldMs = performance.now();
   // Wall-clock anchor for live-pace mode; set on the first frame.
   let paceStartMs = -1;
@@ -97,19 +117,19 @@ export async function renderChronotope(
     if (!viz || !vizCtx || !meta) return;
     if (drawSource && frameCtx) vizCtx.drawImage(frameCanvas, 0, 0, vizW, vizH);
     vizCtx.drawImage(chronotope, 0, 0, vizW, vizH);
-    if (
-      opts.sweep !== false &&
-      Number.isFinite(sweepCol) &&
-      sweepCol >= 0 &&
-      sweepCol < meta.width
-    ) {
-      const x = (sweepCol / meta.width) * vizW;
-      vizCtx.save();
-      vizCtx.globalAlpha = 0.22;
-      vizCtx.fillStyle = "#ffffff";
-      vizCtx.fillRect(x, 0, Math.max(2, (vizW / meta.width) * 2), vizH);
-      vizCtx.restore();
-    }
+    if (opts.sweep === false) return;
+    const w = meta.width;
+    const stripeW = Math.max(2, (vizW / w) * 2);
+    const drawMarker = (col: number) => {
+      if (!Number.isFinite(col) || col < 0 || col >= w) return;
+      vizCtx!.fillRect((col / w) * vizW, 0, stripeW, vizH);
+    };
+    vizCtx.save();
+    vizCtx.globalAlpha = 0.22;
+    vizCtx.fillStyle = "#ffffff";
+    drawMarker(sweepCol);
+    if (sweepCol2 !== sweepCol) drawMarker(sweepCol2);
+    vizCtx.restore();
   };
 
   await decodeVideo(
@@ -141,13 +161,14 @@ export async function renderChronotope(
         vizCtx.fillRect(0, 0, vizW, vizH);
       }
 
-      const fmap = frameForColumn(
-        m.width,
-        m.totalFrames,
-        opts.reverse ?? false,
-        opts.steps,
-      );
+      const fmap = frameForColumn(m.width, m.totalFrames, {
+        reverse,
+        steps: opts.steps,
+        shape: opts.shape,
+        pivot: opts.pivot,
+      });
       columnsByFrame = columnsForFrame(fmap, m.totalFrames);
+      pivotCol = Math.round((opts.pivot ?? 0.5) * (m.width - 1));
 
       opts.onChronotopeReady?.(chronotope);
       opts.onMeta?.(m);
@@ -192,10 +213,36 @@ export async function renderChronotope(
       // 3) Paint columns owned by this frame onto the chronotope canvas.
       const cols = columnsByFrame[index];
       if (cols && cols.length > 0) {
-        if (opts.reverse) {
-          sweepCol = Math.min(sweepCol, cols[0]);
+        // Linear: a single marker tracks the monotonic leading edge.
+        // V/parabola: two markers, one per side of the pivot. The marker
+        // sits on the boundary between painted and unpainted —
+        //   forward (apex = frame 0): painted region grows outward, so
+        //     the marker is the OUTER edge of the current frame's cols
+        //     (cols[0] on the left, cols[last] on the right).
+        //   reverse (apex = frame N-1): painted region grows inward from
+        //     the edges, so the marker is the INNER edge — the col
+        //     closest to the pivot on each side. Using cols[0]/cols[last]
+        //     here would leave the markers stuck at the outer rim of the
+        //     current frame's band; in particular for parabola the apex
+        //     frame owns a wide stripe around the pivot and the markers
+        //     would never meet in the middle.
+        if (!opts.shape || opts.shape === "linear") {
+          if (reverse) {
+            sweepCol = Math.min(sweepCol, cols[0]);
+          } else {
+            sweepCol = Math.max(sweepCol, cols[cols.length - 1]);
+          }
+        } else if (reverse) {
+          let i = 0;
+          while (i < cols.length && cols[i] <= pivotCol) i++;
+          // cols[i-1] = closest left-arm col to pivot; cols[i] = closest
+          // right-arm col. Either side may be empty if the entire frame
+          // landed on one arm (off-centre pivot near the apex).
+          if (i > 0) sweepCol = cols[i - 1];
+          if (i < cols.length) sweepCol2 = cols[i];
         } else {
-          sweepCol = Math.max(sweepCol, cols[cols.length - 1]);
+          sweepCol = cols[0];
+          sweepCol2 = cols[cols.length - 1];
         }
         let runStart = cols[0];
         let runEnd = cols[0];
@@ -248,12 +295,23 @@ export async function renderChronotope(
   );
 
   if (!meta) throw new Error("Decoder finished without metadata");
+  const finalMeta: VideoMeta = meta;
 
   // Final composite paint so the viz canvas (and last recorded frame)
-  // ends on the completed chronotope rather than mid-build.
+  // ends on the completed chronotope rather than mid-build. Clear the
+  // sweep markers first — the build is done, so the lingering wave-front
+  // indicator should disappear and reveal the whole chronotope. Record
+  // one extra clean frame too: the MP4 plays back in the UI and otherwise
+  // would freeze on a marker-laden last frame.
+  sweepCol = -1;
+  sweepCol2 = -1;
   compositeViz(false);
+  if (opts.onVizFrame) {
+    const tailP = opts.onVizFrame(finalMeta.totalFrames);
+    if (tailP) await tailP;
+  }
 
-  return { meta, chronotope };
+  return { meta: finalMeta, chronotope };
 }
 
 // Flatten a (possibly transparent) chronotope canvas onto black and produce
