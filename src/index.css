@@ -275,6 +275,27 @@ button.toggle[aria-pressed="false"] {
   box-shadow: inset 0 0 0 1px var(--border);
 }
 
+/* Segmented group for the shape selector — three toggles butted together
+   so they read as one control. */
+.shape-group {
+  display: inline-flex;
+  gap: 2px;
+}
+
+.shape-group button {
+  border-radius: 0;
+}
+
+.shape-group button:first-child {
+  border-top-left-radius: 8px;
+  border-bottom-left-radius: 8px;
+}
+
+.shape-group button:last-child {
+  border-top-right-radius: 8px;
+  border-bottom-right-radius: 8px;
+}
+
 /* Inline text-link styled button (lives inside <p> copy). */
 .link {
   background: none;
