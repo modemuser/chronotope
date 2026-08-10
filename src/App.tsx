@@ -214,7 +214,9 @@ export function App() {
   const [shape, setShape] = useState<Shape>("linear");
   const [showSweep, setShowSweep] = useState(true);
   const [stripes, setStripes] = useState(false);
-  const [deflicker, setDeflicker] = useState(true);
+  // Off by default: the measurement readbacks roughly double render
+  // time, and not every source flickers enough to need it.
+  const [deflicker, setDeflicker] = useState(false);
   const [infoOpen, setInfoOpen] = useState(false);
   const [howOpen, setHowOpen] = useState(false);
 

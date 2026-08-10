@@ -7,8 +7,12 @@
   --border: #2a2a36;
   --fg: #e7e7ee;
   --fg-dim: #8a8a98;
-  --accent: #6ee7b7;
-  --accent-strong: #10b981;
+  /* Petrol blue of a certain church door in Aachen — not quite blue,
+     with a hint of green. */
+  --accent: #82c5dc;
+  --accent-strong: #38758f;
+  --accent-hover: #4589a8;
+  --accent-ink: #eef7fb;
   --error: #ef4444;
 }
 
@@ -293,7 +297,7 @@ header .definition em {
 
 button {
   background: var(--accent-strong);
-  color: #042417;
+  color: var(--accent-ink);
   border: 0;
   border-radius: 8px;
   padding: 10px 18px;
@@ -313,7 +317,7 @@ button svg {
 }
 
 button:hover:not(:disabled) {
-  background: var(--accent);
+  background: var(--accent-hover);
 }
 
 button:disabled {
@@ -330,7 +334,7 @@ button.secondary {
    false → muted (dimmed secondary). */
 button.toggle[aria-pressed="true"] {
   background: var(--accent-strong);
-  color: #042417;
+  color: var(--accent-ink);
 }
 
 button.toggle[aria-pressed="false"] {

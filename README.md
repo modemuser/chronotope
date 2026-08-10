@@ -61,6 +61,10 @@ pnpm build    # → dist/
     flicker-free footage the correction vanishes instead of injecting
     banding of its own.
 
+  Off by default (waveform toggle in the controls row): the per-frame
+  measurement readbacks roughly double render time, and clean sources
+  don't need it.
+
 - **Recorder profile**: H.264 baseline (`avc1.42E02A`) +
   `hardwareAcceleration: "prefer-software"`. Higher profiles pull in B-frames
   in `latencyMode: "quality"`, and mp4-muxer writes v0 ctts boxes that can't

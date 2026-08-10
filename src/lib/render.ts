@@ -314,11 +314,12 @@ export async function renderChronotope(
       frameCanvas.height = m.height;
       // alpha:false: source video frames are opaque; skipping the alpha
       // channel saves per-pixel work on the per-frame full draw below.
-      // willReadFrequently: the deflicker path reads this frame's column
-      // slice back every frame, so keep the canvas CPU-backed.
+      // willReadFrequently only when deflicker will actually read the
+      // column slices back each frame — a CPU-backed canvas slows every
+      // blit, so the default path stays on the GPU.
       frameCtx = frameCanvas.getContext("2d", {
         alpha: false,
-        willReadFrequently: true,
+        willReadFrequently: deflicker,
       });
       if (!frameCtx) throw new Error("No 2d context on frame canvas");
 
