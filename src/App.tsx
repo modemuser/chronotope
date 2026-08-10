@@ -103,6 +103,25 @@ function ColorBarIcon() {
   );
 }
 
+// A jittery waveform settling into a flat line — deflicker toggle.
+function DeflickerIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      width="1em"
+      height="1em"
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.6"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <polyline points="2,8 4,4 6,11 8,6 10,8.5 14,8" />
+    </svg>
+  );
+}
+
 // Lucide-style info circle — opens the options/details explainer.
 function InfoIcon() {
   return (
@@ -195,6 +214,7 @@ export function App() {
   const [shape, setShape] = useState<Shape>("linear");
   const [showSweep, setShowSweep] = useState(true);
   const [stripes, setStripes] = useState(false);
+  const [deflicker, setDeflicker] = useState(true);
   const [infoOpen, setInfoOpen] = useState(false);
   const [howOpen, setHowOpen] = useState(false);
 
@@ -355,6 +375,7 @@ export function App() {
           shape,
           sweep: showSweep,
           steps: stripes ? 24 : undefined,
+          deflicker,
           viz: vizCanvasRef.current!,
           livePace: isMobile,
           onChronotopeReady: (c) => {
@@ -466,11 +487,12 @@ export function App() {
       renderStateRef.current = null;
       chronotopeRef.current = null;
     };
-  }, [file, reverse, shape, showSweep, stripes]);
+  }, [file, reverse, shape, showSweep, stripes, deflicker]);
 
   const onToggleReverse = () => setReverse((r) => !r);
   const onToggleSweep = () => setShowSweep((s) => !s);
   const onToggleStripes = () => setStripes((s) => !s);
+  const onToggleDeflicker = () => setDeflicker((d) => !d);
 
   const SHAPE_OPTIONS: ReadonlyArray<{
     value: Shape;
@@ -722,6 +744,22 @@ export function App() {
               <StairsIcon />
             </button>
             <button
+              className="secondary toggle"
+              onClick={onToggleDeflicker}
+              aria-pressed={deflicker}
+              title={
+                deflicker
+                  ? "Deflicker on — each frame's mean R/G/B is matched to " +
+                    "its neighbours to remove exposure and white-balance " +
+                    "flicker banding. Click to show the raw frames."
+                  : "Deflicker off — raw frames; exposure or white-balance " +
+                    "flicker in the source may show as vertical banding. " +
+                    "Click to enable."
+              }
+            >
+              <DeflickerIcon />
+            </button>
+            <button
               className="info-button"
               onClick={() => setInfoOpen((o) => !o)}
               aria-pressed={infoOpen}
@@ -815,6 +853,20 @@ export function App() {
                 <span>
                   Quantise into 24 vertical stripes — each shows a single
                   source frame.
+                </span>
+              </li>
+              <li className="group-start">
+                <span className="info-glyph">
+                  <DeflickerIcon />
+                </span>
+                <span className="info-name">Deflicker</span>
+                <span>
+                  Match every frame's R/G/B levels — measured around the
+                  columns it contributes — to its temporal neighbours,
+                  plus a whole-video smoothing pass. Kills the vertical
+                  banding that exposure, white-balance and lens-glare
+                  flicker cause; slow light changes (sunsets) still come
+                  through.
                 </span>
               </li>
               <li className="group-start">

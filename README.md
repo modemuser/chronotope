@@ -26,6 +26,35 @@ pnpm build    # → dist/
 
 ## Notes from getting this working
 
+- **Deflicker**: per-frame exposure/white-balance flicker in the source
+  shows up as vertical banding (adjacent columns = adjacent frames), so
+  each frame's level is matched to its temporal neighbours before
+  slicing — the standard timelapse deflicker, with several twists
+  learned from real GoPro footage:
+  - per **channel** — about half the banding energy is white-balance
+    flicker a luma-only gain can't touch;
+  - per **horizontal strip** — local tone mapping flickers sky and
+    ground almost independently (r ≈ 0.27 between them);
+  - measured in a **slice-local window** centred on the columns each
+    frame actually contributes — lens glare around a rising sun is
+    horizontally localised, and a full-frame level both misses it and
+    smears its correction into unaffected regions. Levels use the
+    interquartile mean so content drifting through the window (the sun's
+    disc) doesn't drag the estimate;
+  - applied in **float precision** on the chronotope columns via
+    getImageData/putImageData — typical corrections are ~0.4%, right at
+    the 1/255 step canvas composite ops quantise to, so a composite-op
+    gain literally rounds to a no-op. Preview/thumbnail surfaces use the
+    cheap composite approximation (multiply / lighter self-draw, since
+    iOS WebKit lacks `ctx.filter`);
+  - a causal 10-frame window during the streaming render (so the live
+    build and recorded animation are already corrected), then a
+    **two-pass polish** on the finished still: glare/AE episodes of
+    15-50 frames sail through any short causal window, so the whole
+    measured series gets a robust trend fit (sliding median + mean) and
+    each frame's columns are corrected to it — lag-free, and genuine
+    long light changes (the sunrise itself) pass through untouched.
+
 - **Recorder profile**: H.264 baseline (`avc1.42E02A`) +
   `hardwareAcceleration: "prefer-software"`. Higher profiles pull in B-frames
   in `latencyMode: "quality"`, and mp4-muxer writes v0 ctts boxes that can't
