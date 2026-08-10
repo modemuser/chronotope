@@ -246,14 +246,15 @@ export async function renderChronotope(
   const deflicker = opts.deflicker ?? true;
   const measureCanvas = document.createElement("canvas");
   let measureCtx: CanvasRenderingContext2D | null = null;
-  // One smoother per column-run ordinal (linear sweeps have one run per
-  // frame; v/parabola have one per arm) so each slice position gets its
-  // own temporal reference.
-  const smoothersByRun = new Map<number, StripSmoother>();
-  // Per-frame measurement log for the two-pass polish after decode: raw
-  // strip levels and the causal gains applied, per run ordinal.
-  const rawMeansLog: Array<Array<Array<[number, number, number]>>> = [];
-  const appliedLog: Array<Array<Array<[number, number, number]>>> = [];
+  // The causal (streaming) pass corrects from FULL-WIDTH strip levels
+  // only — content drifting through a small window would make local
+  // gains noisy, and the preview applies them to the whole frame, so
+  // conservative wins here. The slice-local levels are only LOGGED, per
+  // run ordinal, for the two-pass polish to correct glare afterwards.
+  const smoother = new StripSmoother();
+  const globalLog: Array<Array<[number, number, number]>> = [];
+  const localLog: Array<Array<Array<[number, number, number]>>> = [];
+  const appliedLog: Array<Array<[number, number, number]>> = [];
 
   // Both V and parabola read better with their "into the centre" variant
   // as the default: V → arrowhead, parabola → radial halo. So for any
@@ -424,7 +425,8 @@ export async function renderChronotope(
       //     preview surfaces.
       const cols = columnsByFrame[index];
       const runs = cols && cols.length > 0 ? columnRuns(cols) : [];
-      let gainsByRun: Array<Array<[number, number, number]>> | null = null;
+      let gains: Array<[number, number, number]> | null = null;
+      let rowGains: Float32Array | null = null;
       if (measureCtx && runs.length > 0) {
         measureCtx.drawImage(
           frameCanvas,
@@ -435,41 +437,40 @@ export async function renderChronotope(
         );
         const mw = measureCanvas.width;
         const mh = measureCanvas.height;
-        // One local window per run; degenerate mappings (steps mode can
-        // in principle fragment) fall back to a single full-width window.
+        const globalMeans = meanRgbStrips(img.data, mw, mh);
+        gains = smoother.next(globalMeans);
+        globalLog[index] = globalMeans;
+        appliedLog[index] = gains;
+        if (gains.some((g) => g.some((v) => Math.abs(v - 1) > 1e-4))) {
+          rowGains = rowGainsFor(gains, meta.height);
+        }
+        // Log slice-local levels per run for the two-pass polish.
+        // Degenerate mappings (steps mode can in principle fragment)
+        // fall back to a single full-width window.
         const local = runs.length <= 4;
         const nWindows = local ? runs.length : 1;
-        gainsByRun = [];
-        const rawByRun: Array<Array<[number, number, number]>> = [];
+        const localByRun: Array<Array<[number, number, number]>> = [];
         for (let r = 0; r < nWindows; r++) {
-          let x0 = 0;
-          let x1 = mw;
-          if (local) {
-            const [rs, re] = runs[r];
-            const cx = (((rs + re) / 2 + 0.5) / meta.width) * mw;
-            const half = Math.max(12, Math.round(mw * MEASURE_WINDOW_HALF));
-            x0 = Math.max(0, Math.round(cx - half));
-            x1 = Math.min(mw, Math.round(cx + half));
-            if (x1 - x0 < 2 * half) {
-              // Clamped at an edge — keep the window width by extending
-              // the other side.
-              if (x0 === 0) x1 = Math.min(mw, 2 * half);
-              else x0 = Math.max(0, x1 - 2 * half);
-            }
+          if (!local) {
+            localByRun.push(globalMeans);
+            break;
           }
-          const means = meanRgbStrips(
-            img.data, mw, mh, DEFLICKER_STRIPS, x0, x1,
+          const [rs, re] = runs[r];
+          const cx = (((rs + re) / 2 + 0.5) / meta.width) * mw;
+          const half = Math.max(12, Math.round(mw * MEASURE_WINDOW_HALF));
+          let x0 = Math.max(0, Math.round(cx - half));
+          let x1 = Math.min(mw, Math.round(cx + half));
+          if (x1 - x0 < 2 * half) {
+            // Clamped at an edge — keep the window width by extending
+            // the other side.
+            if (x0 === 0) x1 = Math.min(mw, 2 * half);
+            else x0 = Math.max(0, x1 - 2 * half);
+          }
+          localByRun.push(
+            meanRgbStrips(img.data, mw, mh, DEFLICKER_STRIPS, x0, x1),
           );
-          let sm = smoothersByRun.get(r);
-          if (!sm) {
-            sm = new StripSmoother();
-            smoothersByRun.set(r, sm);
-          }
-          rawByRun.push(means);
-          gainsByRun.push(sm.next(means));
         }
-        rawMeansLog[index] = rawByRun;
-        appliedLog[index] = gainsByRun;
+        localLog[index] = localByRun;
       }
 
       // 3) Paint columns owned by this frame onto the chronotope canvas.
@@ -506,21 +507,15 @@ export async function renderChronotope(
           sweepCol2 = cols[cols.length - 1];
         }
         // Paint each run of contiguous columns. With deflicker gains the
-        // run's pixels are read back, multiplied in float by that run's
-        // per-row gains, and written straight into the chronotope
-        // (putImageData) — runs are only a few columns wide, so this
-        // stays cheap even at 5K. Without gains, a plain GPU-side blit.
+        // run's pixels are read back, multiplied in float by the per-row
+        // gains, and written straight into the chronotope (putImageData)
+        // — runs are only a few columns wide, so this stays cheap even
+        // at 5K. Without gains, a plain GPU-side blit.
         for (let r = 0; r < runs.length; r++) {
           const [rs, re] = runs[r];
           const w = re - rs + 1;
-          const gains = gainsByRun
-            ? gainsByRun[Math.min(r, gainsByRun.length - 1)]
-            : null;
-          const significant =
-            gains &&
-            gains.some((g) => g.some((v) => Math.abs(v - 1) > 1e-4));
-          if (significant && frameCtx && chronoCtx) {
-            const rg = rowGainsFor(gains, meta.height);
+          if (rowGains && frameCtx && chronoCtx) {
+            const rg = rowGains;
             const img = frameCtx.getImageData(rs, 0, w, meta.height);
             const d = img.data;
             for (let y = 0; y < meta.height; y++) {
@@ -548,10 +543,9 @@ export async function renderChronotope(
       // 3b) Apply the approximate composite-op gain to the full frame
       //     canvas for the preview surfaces (viz backdrop, thumbnails /
       //     colour bar) — after the columns were sliced from the raw
-      //     frame, so the float correction isn't applied twice. Uses the
-      //     first run's gains; preview-only, so close enough. Then drop
-      //     this frame's thumbnail into its slot in the strip.
-      if (gainsByRun) applyGain(frameCtx, frameCanvas, gainsByRun[0]);
+      //     frame, so the float correction isn't applied twice. Then
+      //     drop this frame's thumbnail into its slot in the strip.
+      if (gains) applyGain(frameCtx, frameCanvas, gains);
       if (thumbCtx) {
         const c = index % thumbCols;
         const r = Math.floor(index / thumbCols);
@@ -603,9 +597,9 @@ export async function renderChronotope(
     let measured = 0;
     let maxRuns = 0;
     for (let i = 0; i < nF; i++) {
-      if (rawMeansLog[i]) {
+      if (globalLog[i]) {
         measured++;
-        maxRuns = Math.max(maxRuns, rawMeansLog[i].length);
+        maxRuns = Math.max(maxRuns, localLog[i]?.length ?? 0);
       }
     }
     if (
@@ -614,30 +608,34 @@ export async function renderChronotope(
       maxRuns > 0 &&
       measured > 4 * DEFLICKER_MEDIAN_RADIUS
     ) {
-      // Per run ordinal: build a dense per-frame series (holes filled by
-      // carrying the nearest measurement, so the trend fit stays sane),
-      // fit the smooth reference, then null out frames that never had
-      // that run so nothing gets repainted there.
+      // Per run ordinal: build dense per-frame global/local series
+      // (holes filled by carrying the nearest measurement, so the trend
+      // fit stays sane), compute the two-pass residual, then null out
+      // frames that never had that run so nothing gets repainted there.
       const residualByRun: Array<
         Array<Array<[number, number, number]> | null>
       > = [];
       for (let r = 0; r < maxRuns; r++) {
-        const rawS: Array<Array<[number, number, number]>> = new Array(nF);
+        const gS: Array<Array<[number, number, number]>> = new Array(nF);
+        const lS: Array<Array<[number, number, number]>> = new Array(nF);
         const appS: Array<Array<[number, number, number]>> = new Array(nF);
-        let last: Array<[number, number, number]> | null = null;
+        let lastG: Array<[number, number, number]> | null = null;
+        let lastL: Array<[number, number, number]> | null = null;
         let lastA: Array<[number, number, number]> | null = null;
         for (let i = 0; i < nF; i++) {
-          const rm = rawMeansLog[i]?.[r];
-          if (rm) {
-            last = rm;
-            lastA = appliedLog[i][r];
+          const lm = localLog[i]?.[r];
+          if (lm) {
+            lastG = globalLog[i];
+            lastL = lm;
+            lastA = appliedLog[i];
           }
-          rawS[i] = last!;
+          gS[i] = lastG!;
+          lS[i] = lastL!;
           appS[i] = lastA!;
         }
         let first = -1;
         for (let i = 0; i < nF; i++) {
-          if (rawS[i]) {
+          if (lS[i]) {
             first = i;
             break;
           }
@@ -647,12 +645,13 @@ export async function renderChronotope(
           continue;
         }
         for (let i = 0; i < first; i++) {
-          rawS[i] = rawS[first];
+          gS[i] = gS[first];
+          lS[i] = lS[first];
           appS[i] = appS[first];
         }
-        const res = residualGains(rawS, appS);
+        const res = residualGains(gS, lS, appS);
         for (let i = 0; i < nF; i++) {
-          if (!rawMeansLog[i]?.[r]) res[i] = null;
+          if (!localLog[i]?.[r]) res[i] = null;
         }
         residualByRun.push(res);
       }
@@ -672,7 +671,7 @@ export async function renderChronotope(
         const d = img.data;
         let touched = false;
         for (let i = 0; i < nF; i++) {
-          const frameRuns = rawMeansLog[i];
+          const frameRuns = localLog[i];
           if (!frameRuns) continue;
           const cols = columnsByFrame[i];
           if (!cols || cols.length === 0) continue;

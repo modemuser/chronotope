@@ -152,30 +152,68 @@ export function smoothSeries(
   return out;
 }
 
+// Radius (frames) of the centred mean applied to the LOCAL excess before
+// it is corrected. Glare episodes span 15-50 frames and survive a ±2
+// smoothing intact; single-frame level noise from content drifting
+// through the local window (tree branches, fog wisps) is white in time
+// and gets averaged down ~√5 instead of being re-printed as banding.
+export const EXCESS_SMOOTH_RADIUS = 2;
+
 // For each frame/strip/channel: the gain that takes the pixels as
 // already corrected by the causal pass (applied[i]) to the two-pass
-// smooth reference. Returns null for a frame whose residual is
-// negligible everywhere (callers skip repainting those).
+// target. The target combines two separately-validated components:
+//   - the GLOBAL deviation (full-width strip levels vs their smooth
+//     trend): exposure / white-balance flicker. Corrected per frame with
+//     no temporal smoothing — full-width averaging already makes the
+//     measurement content-noise-robust, and real flicker is often
+//     single-frame.
+//   - the LOCAL EXCESS (slice-window deviation minus the global one):
+//     lens glare around the slice position. Corrected only after a
+//     centred ±EXCESS_SMOOTH_RADIUS mean, so temporally-coherent glare
+//     episodes are removed while frame-to-frame content noise in the
+//     small window shrinks toward zero.
+// On footage with no flicker at all both components vanish and the
+// output stays raw — the correction cannot inject banding of its own.
+// Returns null for frames whose residual is negligible everywhere
+// (callers skip repainting those).
 export function residualGains(
-  rawMeans: Array<Array<[number, number, number]>>,
+  globalMeans: Array<Array<[number, number, number]>>,
+  localMeans: Array<Array<[number, number, number]>>,
   applied: Array<Array<[number, number, number]>>,
 ): Array<Array<[number, number, number]> | null> {
-  const nFrames = rawMeans.length;
+  const nFrames = globalMeans.length;
   if (nFrames === 0) return [];
-  const nStrips = rawMeans[0].length;
+  const nStrips = globalMeans[0].length;
   const out: Array<Array<[number, number, number]> | null> = Array.from(
     { length: nFrames },
     () => null,
   );
   for (let s = 0; s < nStrips; s++) {
     for (let c = 0; c < 3; c++) {
-      const series = rawMeans.map((f) => f[s][c]);
-      const ref = smoothSeries(series);
+      const g = globalMeans.map((f) => f[s][c]);
+      const l = localMeans.map((f) => f[s][c]);
+      const refG = smoothSeries(g);
+      const refL = smoothSeries(l);
+      // Local excess in log space: what the slice window saw beyond the
+      // full-frame deviation.
+      const e = new Float64Array(nFrames);
       for (let i = 0; i < nFrames; i++) {
-        const raw = series[i];
+        if (g[i] > 1e-3 && l[i] > 1e-3 && refG[i] > 1e-3 && refL[i] > 1e-3) {
+          e[i] = Math.log(l[i] / refL[i]) - Math.log(g[i] / refG[i]);
+        }
+      }
+      for (let i = 0; i < nFrames; i++) {
+        const lo = Math.max(0, i - EXCESS_SMOOTH_RADIUS);
+        const hi = Math.min(nFrames - 1, i + EXCESS_SMOOTH_RADIUS);
+        let sum = 0;
+        for (let j = lo; j <= hi; j++) sum += e[j];
+        const eHat = sum / (hi - lo + 1);
         const target =
-          raw > 1e-3
-            ? Math.min(GAIN_MAX, Math.max(GAIN_MIN, ref[i] / raw))
+          g[i] > 1e-3
+            ? Math.min(
+                GAIN_MAX,
+                Math.max(GAIN_MIN, (refG[i] / g[i]) * Math.exp(-eHat)),
+              )
             : 1;
         const r = target / applied[i][s][c];
         if (out[i] === null && Math.abs(r - 1) < 1e-4) continue;

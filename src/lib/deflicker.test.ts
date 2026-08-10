@@ -149,36 +149,81 @@ describe("smoothSeries", () => {
 });
 
 describe("residualGains", () => {
-  it("targets the smooth trend and divides out the causal gain", () => {
-    const n = 300;
-    // One strip; a 25-frame +10% swell that the causal pass left alone.
-    const rawMeans = Array.from({ length: n }, (_, i) => [
-      [i >= 150 && i < 175 ? 110 : 100, 100, 100] as [number, number, number],
+  const flat = (n: number, v = 100) =>
+    Array.from({ length: n }, () => [
+      [v, v, v] as [number, number, number],
     ]);
-    const applied = Array.from({ length: n }, () => [
+  const ones = (n: number) =>
+    Array.from({ length: n }, () => [
       [1, 1, 1] as [number, number, number],
     ]);
-    const res = residualGains(rawMeans, applied);
-    // Inside the swell the red channel gets pulled back down ~10%…
+
+  it("corrects a global flicker swell against the smooth trend", () => {
+    const n = 300;
+    // 25-frame +10% swell visible in BOTH global and local levels.
+    const level = (i: number) => (i >= 150 && i < 175 ? 110 : 100);
+    const g = Array.from({ length: n }, (_, i) => [
+      [level(i), 100, 100] as [number, number, number],
+    ]);
+    const res = residualGains(g, g, ones(n));
     const inSwell = res[160]![0][0];
     assert.ok(Math.abs(inSwell - 100 / 110) < 0.01, `got ${inSwell}`);
-    // …and far outside it, frames need no repaint at all.
     assert.equal(res[50], null);
+  });
+
+  it("corrects a glare episode seen only in the local window", () => {
+    const n = 300;
+    const l = Array.from({ length: n }, (_, i) => [
+      [i >= 150 && i < 175 ? 110 : 100, 100, 100] as [number, number, number],
+    ]);
+    const res = residualGains(flat(n), l, ones(n));
+    // Mid-episode (away from its edges by more than the smoothing
+    // radius) the excess is fully corrected.
+    const inSwell = res[160]![0][0];
+    assert.ok(Math.abs(inSwell - 100 / 110) < 0.01, `got ${inSwell}`);
+    assert.equal(res[50], null);
+  });
+
+  it("barely reacts to single-frame content noise in the local window", () => {
+    const n = 300;
+    const l = Array.from({ length: n }, (_, i) => [
+      [i === 150 ? 104 : 100, 100, 100] as [number, number, number],
+    ]);
+    const res = residualGains(flat(n), l, ones(n));
+    // A ±4% single-frame local-only spike is smoothed over ±2 frames, so
+    // at most ~1/5 of it leaks into the correction.
+    const r = res[150] ? res[150][0][0] : 1;
+    assert.ok(Math.abs(r - 1) < 0.012, `got ${r}`);
+  });
+
+  it("fully corrects single-frame GLOBAL flicker (no temporal smoothing)", () => {
+    const n = 300;
+    const g = Array.from({ length: n }, (_, i) => [
+      [i === 150 ? 110 : 100, 100, 100] as [number, number, number],
+    ]);
+    const res = residualGains(g, g, ones(n));
+    const r = res[150]![0][0];
+    assert.ok(Math.abs(r - 100 / 110) < 0.01, `got ${r}`);
   });
 
   it("accounts for gains the causal pass already applied", () => {
     const n = 300;
-    const rawMeans = Array.from({ length: n }, (_, i) => [
+    const g = Array.from({ length: n }, (_, i) => [
       [i === 150 ? 110 : 100, 100, 100] as [number, number, number],
     ]);
     // Causal pass already fully corrected frame 150.
     const applied = Array.from({ length: n }, (_, i) => [
       [i === 150 ? 100 / 110 : 1, 1, 1] as [number, number, number],
     ]);
-    const res = residualGains(rawMeans, applied);
-    // Nothing (or almost nothing) left to do on frame 150's red channel.
+    const res = residualGains(g, g, applied);
     const r = res[150] ? res[150][0][0] : 1;
     assert.ok(Math.abs(r - 1) < 0.005, `got ${r}`);
+  });
+
+  it("no flicker in, no correction out", () => {
+    const n = 300;
+    const res = residualGains(flat(n), flat(n), ones(n));
+    assert.ok(res.every((r) => r === null));
   });
 });
 
