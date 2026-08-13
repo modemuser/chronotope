@@ -13,6 +13,7 @@ import {
   meanRgbStrips,
   residualGains,
 } from "./deflicker";
+import { TemporalColumnDenoiser, type DenoisedColumn } from "./denoise";
 
 export interface RenderProgress {
   frame: number;
@@ -62,6 +63,11 @@ export interface RenderOptions {
   // that per-frame exposure flicker in the source produces. Defaults to
   // true.
   deflicker?: boolean;
+  // hqdn3d-style temporal denoise: each chronotope column is blended from
+  // the same column across ± DENOISE_RADIUS neighbouring frames, weighted
+  // to pass real motion through untouched. Kills high-ISO grain on
+  // static-camera footage. Defaults to false.
+  denoise?: boolean;
   signal?: AbortSignal;
   onMeta?: (m: VideoMeta) => void;
   onProgress?: (p: RenderProgress) => void;
@@ -209,6 +215,26 @@ function applyGain(
 // values render faster; smaller values feel more responsive.
 const YIELD_AFTER_MS = 16;
 
+// Yield until the next paint opportunity. requestAnimationFrame is the
+// right primitive while the tab is visible (resolves on the next vsync),
+// but browsers suspend rAF entirely in hidden tabs — a render left in a
+// background tab would stall forever. When the document is hidden, fall
+// back to a macrotask immediately; the setTimeout race also covers the
+// tab being hidden after the rAF was scheduled.
+function nextPaint(): Promise<void> {
+  return new Promise<void>((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (!settled) {
+        settled = true;
+        resolve();
+      }
+    };
+    requestAnimationFrame(finish);
+    setTimeout(finish, document.hidden ? 0 : 250);
+  });
+}
+
 export async function renderChronotope(
   file: File,
   opts: RenderOptions = {},
@@ -244,6 +270,8 @@ export async function renderChronotope(
 
   // Tiny canvas for the per-frame luminance measurement (deflicker).
   const deflicker = opts.deflicker ?? true;
+  const denoise = opts.denoise ?? false;
+  let denoiser: TemporalColumnDenoiser | null = null;
   const measureCanvas = document.createElement("canvas");
   let measureCtx: CanvasRenderingContext2D | null = null;
   // The causal (streaming) pass corrects from FULL-WIDTH strip levels
@@ -319,7 +347,7 @@ export async function renderChronotope(
       // blit, so the default path stays on the GPU.
       frameCtx = frameCanvas.getContext("2d", {
         alpha: false,
-        willReadFrequently: deflicker,
+        willReadFrequently: deflicker || denoise,
       });
       if (!frameCtx) throw new Error("No 2d context on frame canvas");
 
@@ -342,6 +370,9 @@ export async function renderChronotope(
         pivot: opts.pivot,
       });
       columnsByFrame = columnsForFrame(fmap, m.totalFrames);
+      if (denoise) {
+        denoiser = new TemporalColumnDenoiser(columnsByFrame, m.height);
+      }
 
       // Lay out thumbnails in a near-square grid so the strip canvas
       // stays within sane dimensions even for long videos (5k frames at
@@ -385,7 +416,7 @@ export async function renderChronotope(
       if (!opts.livePace) {
         const now = performance.now();
         if (now - lastYieldMs >= YIELD_AFTER_MS) {
-          await new Promise<void>((r) => requestAnimationFrame(() => r()));
+          await nextPaint();
           lastYieldMs = performance.now();
         }
       }
@@ -428,7 +459,10 @@ export async function renderChronotope(
       const runs = cols && cols.length > 0 ? columnRuns(cols) : [];
       let gains: Array<[number, number, number]> | null = null;
       let rowGains: Float32Array | null = null;
-      if (measureCtx && runs.length > 0) {
+      // With denoise on, frames that own no columns still serve as
+      // temporal taps for their neighbours' columns — measure them too so
+      // their tap slices get the same flicker correction before blending.
+      if (measureCtx && (runs.length > 0 || denoiser)) {
         measureCtx.drawImage(
           frameCanvas,
           0, 0, measureCanvas.width, measureCanvas.height,
@@ -511,8 +545,10 @@ export async function renderChronotope(
         // run's pixels are read back, multiplied in float by the per-row
         // gains, and written straight into the chronotope (putImageData)
         // — runs are only a few columns wide, so this stays cheap even
-        // at 5K. Without gains, a plain GPU-side blit.
-        for (let r = 0; r < runs.length; r++) {
+        // at 5K. Without gains, a plain GPU-side blit. In denoise mode
+        // painting is deferred: columns are emitted by the delay line
+        // below once their last temporal tap has been seen.
+        for (let r = 0; denoiser === null && r < runs.length; r++) {
           const [rs, re] = runs[r];
           const w = re - rs + 1;
           if (rowGains && frameCtx && chronoCtx) {
@@ -538,6 +574,41 @@ export async function renderChronotope(
               rs, 0, w, meta.height,
             );
           }
+        }
+      }
+
+      // 3a) Temporal denoise: harvest this frame's pixels for every column
+      //     whose owner is within ± DENOISE_RADIUS, with this frame's own
+      //     deflicker gains applied to the harvested slice (each tap is
+      //     corrected by its own frame's gain, so flicker doesn't read as
+      //     inter-tap noise). Columns whose window just closed come back
+      //     blended and are painted here — the chronotope build simply
+      //     lags the sweep marker by the radius.
+      if (denoiser && frameCtx && chronoCtx) {
+        const fc = frameCtx;
+        const cc = chronoCtx;
+        const rg = rowGains;
+        const H = meta.height;
+        const completed = denoiser.onFrame(index, (x0, w) => {
+          const img = fc.getImageData(x0, 0, w, H);
+          if (rg) {
+            const d = img.data;
+            for (let y = 0; y < H; y++) {
+              const gr = rg[y * 3];
+              const gg = rg[y * 3 + 1];
+              const gb = rg[y * 3 + 2];
+              let o = y * w * 4;
+              for (let x = 0; x < w; x++, o += 4) {
+                d[o] = d[o] * gr;
+                d[o + 1] = d[o + 1] * gg;
+                d[o + 2] = d[o + 2] * gb;
+              }
+            }
+          }
+          return img.data;
+        });
+        for (const col of completed) {
+          cc.putImageData(new ImageData(col.data, 1, H), col.x, 0);
         }
       }
 
@@ -569,7 +640,7 @@ export async function renderChronotope(
       //    actually visible, then wait until this frame's wall-clock slot
       //    elapses. If we're already behind schedule, skip the wait.
       if (opts.livePace && meta.fps > 0) {
-        await new Promise<void>((r) => requestAnimationFrame(() => r()));
+        await nextPaint();
         if (paceStartMs < 0) paceStartMs = performance.now();
         const targetMs = paceStartMs + ((index + 1) * 1000) / meta.fps;
         const waitMs = targetMs - performance.now();
@@ -586,6 +657,21 @@ export async function renderChronotope(
   if (!thumbCtx) throw new Error("Thumb strip never initialised");
   const finalMeta: VideoMeta = meta;
   const finalThumbCtx: CanvasRenderingContext2D = thumbCtx;
+
+  // Drain the denoise delay line: columns owned by the trailing
+  // DENOISE_RADIUS frames never saw a closing tap during the stream.
+  // Must happen before the two-pass polish reads the canvas back.
+  // (Cast: `denoiser` is assigned inside the onMeta closure, which TS's
+  // control-flow analysis doesn't track — it still believes the `null`
+  // initialiser here.)
+  const dn = denoiser as TemporalColumnDenoiser | null;
+  if (dn && chronoCtx && !opts.signal?.aborted) {
+    const cc = chronoCtx as CanvasRenderingContext2D;
+    const tail: DenoisedColumn[] = dn.flush();
+    for (const col of tail) {
+      cc.putImageData(new ImageData(col.data, 1, finalMeta.height), col.x, 0);
+    }
+  }
 
   // Two-pass polish: the causal window can only cancel flicker shorter
   // than itself — glare / auto-exposure episodes of 15-50 frames (sun
@@ -707,7 +793,7 @@ export async function renderChronotope(
           (chronoCtx as CanvasRenderingContext2D).putImageData(img, x0, 0);
         }
         if (performance.now() - lastYieldMs >= 50) {
-          await new Promise<void>((r) => requestAnimationFrame(() => r()));
+          await nextPaint();
           lastYieldMs = performance.now();
         }
       }

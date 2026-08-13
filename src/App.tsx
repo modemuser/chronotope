@@ -122,6 +122,27 @@ function DeflickerIcon() {
   );
 }
 
+// Grain speckles settling onto a clean baseline — temporal denoise toggle.
+function DenoiseIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      width="1em"
+      height="1em"
+      viewBox="0 0 16 16"
+      fill="currentColor"
+      stroke="none"
+    >
+      <circle cx="3" cy="4" r="1" />
+      <circle cx="7.5" cy="2.8" r="0.8" />
+      <circle cx="12" cy="4.4" r="1" />
+      <circle cx="5.2" cy="7" r="0.7" />
+      <circle cx="10" cy="6.8" r="0.6" />
+      <rect x="2" y="10.5" width="12" height="1.6" rx="0.8" />
+    </svg>
+  );
+}
+
 // Lucide-style info circle — opens the options/details explainer.
 function InfoIcon() {
   return (
@@ -217,6 +238,9 @@ export function App() {
   // Off by default: the measurement readbacks roughly double render
   // time, and not every source flickers enough to need it.
   const [deflicker, setDeflicker] = useState(false);
+  // Off by default: costs one extra column readback per frame per
+  // temporal tap; only high-ISO / low-light sources need it.
+  const [denoise, setDenoise] = useState(false);
   const [infoOpen, setInfoOpen] = useState(false);
   const [howOpen, setHowOpen] = useState(false);
 
@@ -378,6 +402,7 @@ export function App() {
           sweep: showSweep,
           steps: stripes ? 24 : undefined,
           deflicker,
+          denoise,
           viz: vizCanvasRef.current!,
           livePace: isMobile,
           onChronotopeReady: (c) => {
@@ -489,12 +514,13 @@ export function App() {
       renderStateRef.current = null;
       chronotopeRef.current = null;
     };
-  }, [file, reverse, shape, showSweep, stripes, deflicker]);
+  }, [file, reverse, shape, showSweep, stripes, deflicker, denoise]);
 
   const onToggleReverse = () => setReverse((r) => !r);
   const onToggleSweep = () => setShowSweep((s) => !s);
   const onToggleStripes = () => setStripes((s) => !s);
   const onToggleDeflicker = () => setDeflicker((d) => !d);
+  const onToggleDenoise = () => setDenoise((d) => !d);
 
   const SHAPE_OPTIONS: ReadonlyArray<{
     value: Shape;
@@ -615,6 +641,14 @@ export function App() {
               onClick={() => loadSample("vosges_snow.mp4")}
             >
               Cotton candy snow
+            </button>
+            {" | "}
+            <button
+              type="button"
+              className="link"
+              onClick={() => loadSample("eclipse.mp4")}
+            >
+              Total eclipse
             </button>
           </p>
         </header>
@@ -762,6 +796,22 @@ export function App() {
               <DeflickerIcon />
             </button>
             <button
+              className="secondary toggle"
+              onClick={onToggleDenoise}
+              aria-pressed={denoise}
+              title={
+                denoise
+                  ? "Denoise on — each column is blended from the same " +
+                    "column in neighbouring frames; static grain averages " +
+                    "out, real motion passes through. Click for raw grain."
+                  : "Denoise off — high-ISO grain in the source shows up " +
+                    "in the chronotope at full strength. Click to enable " +
+                    "temporal denoising."
+              }
+            >
+              <DenoiseIcon />
+            </button>
+            <button
               className="info-button"
               onClick={() => setInfoOpen((o) => !o)}
               aria-pressed={infoOpen}
@@ -869,6 +919,19 @@ export function App() {
                   banding that exposure, white-balance and lens-glare
                   flicker cause; slow light changes (sunsets) still come
                   through.
+                </span>
+              </li>
+              <li className="group-start">
+                <span className="info-glyph">
+                  <DenoiseIcon />
+                </span>
+                <span className="info-name">Denoise</span>
+                <span>
+                  Blend every column with the same column from neighbouring
+                  frames (hqdn3d-style temporal filter). Grain averages out
+                  where the scene is static; large frame-to-frame changes
+                  keep full weight, so motion stays sharp. Made for
+                  high-ISO timelapse footage.
                 </span>
               </li>
               <li className="group-start">
